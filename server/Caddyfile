@@ -1,0 +1,52 @@
+###############################################################################
+# Caddyfile — 홈캠 릴레이 마스터플랜 §5.1(4단계) / §5.2
+#
+# 정적 파일(camera.html, index.html)과 MediaMTX의 WHIP/WHEP을 동일 출처(HTTPS
+# 443)로 통합해 CORS·혼합 콘텐츠 문제를 원천 제거한다. TLS는 Caddy 자체 ACME가
+# 아니라 Tailscale이 발급한 인증서를 사용한다(setup.sh / cert-renew.sh 참고).
+#
+# 배포 위치: /etc/caddy/Caddyfile
+# 아래 두 자리 표시자를 실제 값으로 바꾼 뒤 `sudo systemctl reload caddy`.
+###############################################################################
+
+# ⚠ 실제 tailnet 호스트명으로 교체 (예: cam-vps.tail1a2b3.ts.net)
+YOUR-HOST.tailXXXXX.ts.net {
+
+	tls /etc/homecam/certs/YOUR-HOST.tailXXXXX.ts.net.crt \
+	    /etc/homecam/certs/YOUR-HOST.tailXXXXX.ts.net.key
+
+	encode zstd gzip
+
+	# §5.2 보안 헤더
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		Permissions-Policy "camera=(self), microphone=(self)"
+		# script-src/style-src에 'unsafe-inline'이 있는 이유: camera.html·index.html이
+		# 외부 파일 없이 <style>/<script>를 인라인으로 담은 "단일 파일 웹앱"이기 때문
+		# (마스터플랜의 명시적 설계 원칙). manifest-src data:는 PWA 매니페스트를
+		# data: URI로 인라인했기 때문에 필요하다.
+		Content-Security-Policy "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; media-src 'self' blob:; manifest-src data:; img-src 'self' data:; base-uri 'none'; frame-ancestors 'none'; form-action 'none'"
+		X-Content-Type-Options "nosniff"
+		Referrer-Policy "no-referrer"
+		-Server
+	}
+
+	# §1.2 WHIP/WHEP — MediaMTX(로컬 8889)로 프록시.
+	# 경로 뒤 세그먼트(/whip/<session-id> 등, DELETE 종료용)까지 함께 넘기도록
+	# 끝을 앵커하지 않는다 — mediamtx가 리버스 프록시 뒤에서 Location 헤더에
+	# 부가 경로를 붙여 돌려주는 경우까지 대비한 것(github.com/bluenviron/mediamtx
+	# issues #4504, #3649 참고). 원본 Host 헤더를 명시적으로 전달해 mediamtx가
+	# 내부 바인드 주소가 아닌 공개 호스트명을 인지하도록 한다.
+	@media path_regexp ^/[A-Za-z0-9_-]+/(whip|whep)(/.*)?$
+	handle @media {
+		reverse_proxy 127.0.0.1:8889 {
+			header_up Host {host}
+		}
+	}
+
+	# 그 외 요청은 정적 파일(뷰어=index.html, 카메라=camera.html) 서빙.
+	handle {
+		root * /var/www/homecam
+		file_server
+	}
+}

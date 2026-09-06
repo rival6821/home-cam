@@ -1,0 +1,21 @@
+# OS
+.DS_Store
+Thumbs.db
+
+# 에디터
+.vscode/
+*.swp
+
+# Claude Code 로컬 설정(개인별 권한 등, 팀과 공유하지 않음)
+.claude/settings.local.json
+
+# 인증서·키 — cert-renew.sh가 VPS에서 생성하는 파일. 실수로 이 폴더에
+# 내려받아도 커밋되지 않도록 방어.
+*.pem
+*.key
+*.crt
+
+# 실제 PIN을 채워 넣은 로컬 작업용 사본(배포용 원본 server/mediamtx.yml은
+# CHANGE_ME_* 자리 표시자만 담아야 한다 — 실제 배포판은 VPS의
+# /etc/homecam/mediamtx.yml에 있고 이 저장소 밖이다).
+*.local.yml

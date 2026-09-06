@@ -1,0 +1,508 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="dark">
+<meta name="theme-color" content="#0b0f10">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="mobile-web-app-capable" content="yes">
+<link rel="manifest" href="data:application/manifest+json,%7B%22name%22%3A%22HomeCam%20Viewer%22%2C%22short_name%22%3A%22HomeCam%22%2C%22display%22%3A%22standalone%22%2C%22start_url%22%3A%22.%2Findex.html%22%2C%22background_color%22%3A%22%230b0f10%22%2C%22theme_color%22%3A%22%230b0f10%22%7D">
+<title>홈캠 뷰어</title>
+<style>
+  /* 영상 시청 도구는 시스템 테마와 무관하게 어두운 플레이어 크롬 하나로 고정한다
+     (YouTube/Netflix 등과 같은 관행 — 영상 자체의 대비를 지키기 위한 의도적 단일 테마).
+     외부 폰트·라이브러리 요청 없음. */
+  :root{
+    --bg:#0b0f10; --surface:#12181a; --surface-2:#1a2225; --line:#253034;
+    --ink:#e7ecea; --ink-soft:#93a3a8; --muted:#5c6c70;
+    --live:#3fbfc4; --warn:#e6a23c; --danger:#e2695c;
+    --font:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Noto Sans KR",sans-serif;
+    --font-mono:ui-monospace,"SF Mono",Menlo,Consolas,monospace;
+  }
+  *{box-sizing:border-box; -webkit-tap-highlight-color:transparent;}
+  [hidden]{display:none !important;}
+  html,body{height:100%; margin:0; background:var(--bg);}
+  body{ font-family:var(--font); color:var(--ink); min-height:100dvh; }
+  @media (prefers-reduced-motion: reduce){ *{transition-duration:.001ms !important;} }
+
+  .screen{ position:fixed; inset:0; display:flex; }
+  .center{ margin:auto; width:100%; max-width:420px; padding:28px; }
+
+  /* ── 설정 화면 ── */
+  .brand{ font-size:13px; letter-spacing:.08em; text-transform:uppercase; color:var(--muted); margin-bottom:6px; }
+  h1{ font-size:22px; margin:0 0 4px; }
+  .lede{ color:var(--ink-soft); font-size:14px; margin:0 0 22px; line-height:1.6; }
+  label{ display:block; font-size:13px; color:var(--ink-soft); margin:16px 0 6px; }
+  input[type=text], input[type=password]{
+    width:100%; background:var(--surface); border:1px solid var(--line); color:var(--ink);
+    font-family:var(--font-mono); font-size:16px; padding:12px 14px; border-radius:6px; outline:none;
+  }
+  input:focus{ border-color:var(--live); }
+  .err{ font-size:12px; color:var(--danger); margin-top:6px; min-height:14px; }
+  button{ font-family:var(--font); font-size:15px; font-weight:600; border:none; border-radius:8px; padding:13px 16px; cursor:pointer; }
+  .btn-primary{ background:var(--live); color:#04211f; width:100%; margin-top:20px; }
+  .btn-ghost{ background:var(--surface-2); color:var(--ink); border:1px solid var(--line); width:100%; }
+  .recent{ margin-top:24px; }
+  .recent-title{ font-size:12px; color:var(--muted); text-transform:uppercase; letter-spacing:.06em; margin-bottom:8px; }
+  .recent-item{
+    display:flex; justify-content:space-between; align-items:center; width:100%;
+    background:var(--surface); border:1px solid var(--line); border-radius:6px;
+    padding:11px 14px; margin-bottom:8px; color:var(--ink); font-size:14px; text-align:left;
+  }
+  .recent-item span.p{ color:var(--muted); font-family:var(--font-mono); font-size:12px; }
+
+  /* ── 플레이어 화면 ── */
+  #playerScreen{ flex-direction:column; background:#000; }
+  .player-wrap{ position:relative; flex:1; display:flex; background:#000; }
+  #playerVideo{ margin:auto; width:100%; height:100%; object-fit:contain; background:#000; }
+
+  .top-bar{
+    position:absolute; top:0; left:0; right:0; padding:calc(14px + env(safe-area-inset-top)) 16px 28px;
+    display:flex; align-items:center; gap:10px; background:linear-gradient(to bottom, rgba(0,0,0,.7), transparent);
+    transition:opacity .2s ease;
+  }
+  .status-pill{ display:flex; align-items:center; gap:6px; font-size:12.5px; font-family:var(--font-mono); color:var(--ink-soft); }
+  .dot{ width:7px; height:7px; border-radius:50%; background:var(--muted); }
+  .dot.live{ background:var(--live); box-shadow:0 0 8px var(--live); }
+  .dot.warn{ background:var(--warn); }
+  .dot.error{ background:var(--danger); }
+  .cam-name{ font-weight:600; font-size:14px; }
+  .top-bar .spacer{ flex:1; }
+  .icon-btn{
+    background:rgba(255,255,255,.08); border:none; color:var(--ink); width:38px; height:38px; border-radius:50%;
+    display:flex; align-items:center; justify-content:center; font-size:16px; padding:0;
+  }
+  .rec-badge{
+    display:flex; align-items:center; gap:6px; background:rgba(226,105,92,.15); color:var(--danger);
+    font-family:var(--font-mono); font-size:12px; padding:5px 10px; border-radius:20px;
+  }
+  .rec-dot{ width:7px; height:7px; border-radius:50%; background:var(--danger); animation:pulse 1.4s ease-in-out infinite; }
+  @keyframes pulse{ 0%,100%{opacity:1;} 50%{opacity:.3;} }
+
+  .bottom-bar{
+    position:absolute; bottom:0; left:0; right:0; padding:20px 16px calc(20px + env(safe-area-inset-bottom));
+    display:flex; align-items:center; justify-content:center; gap:22px;
+    background:linear-gradient(to top, rgba(0,0,0,.7), transparent);
+    transition:opacity .2s ease;
+  }
+  .big-icon-btn{
+    background:rgba(255,255,255,.1); border:none; color:var(--ink); width:52px; height:52px; border-radius:50%;
+    display:flex; align-items:center; justify-content:center; font-size:20px; padding:0;
+  }
+  .big-icon-btn.recording{ background:var(--danger); color:#fff; }
+
+  .chrome-hidden .top-bar, .chrome-hidden .bottom-bar{ opacity:0; pointer-events:none; }
+
+  .unmute-overlay{
+    position:absolute; inset:0; display:flex; align-items:center; justify-content:center;
+    background:rgba(0,0,0,.35);
+  }
+  .unmute-btn{
+    background:rgba(255,255,255,.14); color:#fff; border:1px solid rgba(255,255,255,.3);
+    padding:14px 22px; border-radius:30px; font-size:14px; display:flex; gap:8px; align-items:center;
+  }
+
+  .toast{
+    position:absolute; left:50%; bottom:100px; transform:translateX(-50%);
+    background:var(--surface-2); color:var(--ink); border:1px solid var(--line);
+    padding:10px 16px; border-radius:8px; font-size:13px; opacity:0; transition:opacity .2s ease; pointer-events:none;
+  }
+  .toast.show{ opacity:1; }
+
+  .back-link{ position:absolute; top:calc(14px + env(safe-area-inset-top)); left:16px; font-size:13px; color:var(--ink-soft); background:none; border:none; }
+</style>
+</head>
+<body>
+
+  <!-- ════════ 설정 화면 ════════ -->
+  <section id="setupScreen" class="screen">
+    <div class="center">
+      <div class="brand">HOMECAM · 뷰어</div>
+      <h1>카메라 시청 연결</h1>
+      <p class="lede">가족에게 받은 카메라 경로와 시청 PIN을 입력하세요. 값은 이 기기에만 저장됩니다.</p>
+
+      <form id="setupForm">
+        <label for="pathInput">카메라 경로</label>
+        <input id="pathInput" type="text" inputmode="latin" autocapitalize="off" autocorrect="off" placeholder="livingroom" maxlength="32">
+        <label for="pinInput">시청 PIN</label>
+        <input id="pinInput" type="password" inputmode="latin" autocapitalize="off" autocorrect="off" placeholder="가족 공용 시청 PIN" maxlength="32">
+        <div class="err" id="setupErr"></div>
+        <button type="submit" class="btn-primary">시청 시작</button>
+      </form>
+
+      <div class="recent" id="recentWrap" hidden>
+        <div class="recent-title">최근 접속</div>
+        <div id="recentList"></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ════════ 플레이어 화면 ════════ -->
+  <section id="playerScreen" class="screen" hidden>
+    <div class="player-wrap" id="playerWrap">
+      <video id="playerVideo" playsinline muted autoplay></video>
+
+      <div class="top-bar" id="topBar">
+        <button class="back-link" id="backBtn" style="position:static;">← 변경</button>
+        <span class="cam-name" id="camNameLabel">–</span>
+        <div class="status-pill"><span class="dot" id="statusDot"></span><span id="statusText">연결 중…</span></div>
+        <div class="spacer"></div>
+        <span class="rec-badge" id="recBadge" hidden><span class="rec-dot"></span><span id="recTimer">00:00</span></span>
+      </div>
+
+      <div class="unmute-overlay" id="unmuteOverlay">
+        <button class="unmute-btn" id="unmuteBtn">🔇 탭하여 소리 켜기</button>
+      </div>
+
+      <div class="bottom-bar" id="bottomBar">
+        <button class="big-icon-btn" id="recordBtn" title="녹화">⏺</button>
+        <button class="big-icon-btn" id="fullscreenBtn" title="전체화면">⛶</button>
+      </div>
+
+      <div class="toast" id="toast"></div>
+    </div>
+  </section>
+
+<script>
+(function(){
+  'use strict';
+
+  // ───────────────────────── 상수(마스터플랜 §2·§3 값과 동일) ─────────────────────────
+  const ICE_SERVERS = [{ urls: 'stun:stun.l.google.com:19302' }];
+  const ICE_GATHER_TIMEOUT = 4000;
+  const RECONNECT_BASE = 1000, RECONNECT_FACTOR = 1.8, RECONNECT_MAX = 30000, RECONNECT_JITTER = 0.2;
+  const WATCHDOG_INTERVAL = 60000, WATCHDOG_MAX_STALLS = 3;
+  const PATH_PIN_RE = /^[A-Za-z0-9_-]{1,32}$/;
+  const RECENT_KEY = 'homecam.viewer.recent';
+  const RECENT_MAX = 5;
+
+  class AuthError extends Error {}
+
+  // ───────────────────────── §2.3 MediaRecorder 코덱 매트릭스 ─────────────────────────
+  function isIOS(){
+    return /iP(hone|ad|od)/.test(navigator.userAgent) ||
+      (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+  }
+  function recorderMimeCandidates(){
+    // iOS: 14.5~18.3은 MP4/H.264만, 18.4+는 WebM도 가능 → MP4를 먼저 시도해 두 구간 모두 커버
+    // Android Chrome: WebM/VP8이 표준 경로, MP4는 보조
+    return isIOS()
+      ? ['video/mp4;codecs=avc1.42E01E,mp4a.40.2', 'video/mp4', 'video/webm;codecs=vp8,opus']
+      : ['video/webm;codecs=vp8,opus', 'video/mp4'];
+  }
+  function pickSupportedMime(){
+    for (const mime of recorderMimeCandidates()) {
+      try { if (window.MediaRecorder && MediaRecorder.isTypeSupported(mime)) return mime; } catch (e) {}
+    }
+    return '';
+  }
+
+  // ───────────────────────── 엘리먼트 ─────────────────────────
+  const screens = { setup: document.getElementById('setupScreen'), player: document.getElementById('playerScreen') };
+  const playerVideo = document.getElementById('playerVideo');
+  const statusDot = document.getElementById('statusDot');
+  const statusText = document.getElementById('statusText');
+  const camNameLabel = document.getElementById('camNameLabel');
+  const unmuteOverlay = document.getElementById('unmuteOverlay');
+  const topBar = document.getElementById('topBar');
+  const bottomBar = document.getElementById('bottomBar');
+  const playerWrap = document.getElementById('playerWrap');
+  const toastEl = document.getElementById('toast');
+  const recBadge = document.getElementById('recBadge');
+  const recTimer = document.getElementById('recTimer');
+
+  function showScreen(name){ Object.entries(screens).forEach(([k, el]) => { el.hidden = (k !== name); }); }
+  function setStatus(kind, text){
+    statusText.textContent = text;
+    statusDot.className = 'dot ' + (kind === 'live' ? 'live' : kind === 'warn' ? 'warn' : kind === 'error' ? 'error' : '');
+  }
+  let toastTimer = null;
+  function flash(msg){
+    toastEl.textContent = msg;
+    toastEl.classList.add('show');
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => toastEl.classList.remove('show'), 2400);
+  }
+
+  // ───────────────────────── §2.4 설정/최근 접속 저장 ─────────────────────────
+  function loadConfig(){
+    const hash = new URLSearchParams(location.hash.slice(1));
+    return { path: hash.get('cam') || '', pin: hash.get('pin') || '' };
+  }
+  function readRecent(){
+    try { return JSON.parse(localStorage.getItem(RECENT_KEY) || '[]'); }
+    catch (e) { return []; } /* 프라이빗 브라우징 등으로 저장소 접근 불가 — 빈 목록으로 계속 진행 */
+  }
+  function pushRecent(path, pin){
+    let list = readRecent().filter(item => item.path !== path);
+    list.unshift({ path, pin });
+    list = list.slice(0, RECENT_MAX);
+    try { localStorage.setItem(RECENT_KEY, JSON.stringify(list)); }
+    catch (e) { console.warn('[homecam] 최근 접속 저장 실패', e); }
+  }
+  function renderRecent(){
+    const list = readRecent();
+    const wrap = document.getElementById('recentWrap');
+    const listEl = document.getElementById('recentList');
+    if (list.length === 0) { wrap.hidden = true; return; }
+    wrap.hidden = false;
+    listEl.innerHTML = '';
+    list.forEach(item => {
+      const btn = document.createElement('button');
+      btn.className = 'recent-item';
+      btn.type = 'button';
+      btn.innerHTML = `<span>${item.path}</span><span class="p">다시 연결 →</span>`;
+      btn.addEventListener('click', () => connectTo(item.path, item.pin));
+      listEl.appendChild(btn);
+    });
+  }
+
+  // ───────────────────────── 상태 ─────────────────────────
+  let config = { path: '', pin: '' };
+  let pc = null, remoteStream = null, sessionUrl = null;
+  let reconnectAttempt = 0, reconnecting = false;
+  let watchdogTimer = null;
+  let recorder = null, recordedChunks = [], recTimerHandle = null, recStartedAt = 0;
+
+  function waitForIceGatheringComplete(peerConn, timeoutMs){
+    if (peerConn.iceGatheringState === 'complete') return Promise.resolve();
+    return new Promise(resolve => {
+      const check = () => { if (peerConn.iceGatheringState === 'complete') finish(); };
+      const finish = () => { peerConn.removeEventListener('icegatheringstatechange', check); resolve(); };
+      peerConn.addEventListener('icegatheringstatechange', check);
+      setTimeout(finish, timeoutMs);
+    });
+  }
+
+  // ───────────────────────── §1.2 WHEP 재생(POST /path/whep) ─────────────────────────
+  async function playWhep(peerConn, path, pin){
+    const res = await fetch(`/${encodeURIComponent(path)}/whep`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/sdp',
+        'Authorization': 'Basic ' + btoa(`family-viewer:${pin}`)
+      },
+      body: peerConn.localDescription.sdp
+    });
+    if (res.status === 401 || res.status === 403) throw new AuthError('PIN이 올바르지 않습니다');
+    if (res.status !== 201) throw new Error(`WHEP 연결 실패 (HTTP ${res.status})`);
+    const location = res.headers.get('Location');
+    const answerSdp = await res.text();
+    await peerConn.setRemoteDescription({ type: 'answer', sdp: answerSdp });
+    return resolveSessionUrl(location);
+  }
+  // 리버스 프록시 뒤의 MediaMTX가 Location 헤더에 내부 바인드 주소를 절대 URL로 담아
+  // 돌려주는 사례가 보고되어 있다(github.com/bluenviron/mediamtx/issues/4504).
+  // 경로만 취하고 항상 현재 페이지와 같은 출처로 재작성해 이 문제를 원천 차단한다.
+  function resolveSessionUrl(location){
+    if (!location) return null;
+    const r = new URL(location, window.location.href);
+    return new URL(r.pathname + r.search, window.location.href).href;
+  }
+
+  function cleanupConnection(){
+    clearInterval(watchdogTimer);
+    if (sessionUrl) { fetch(sessionUrl, { method: 'DELETE' }).catch(() => {}); sessionUrl = null; }
+    if (pc) { try { pc.close(); } catch (e) {} pc = null; }
+  }
+
+  // ───────────────────────── §3.3 지수 백오프 재연결(카메라와 동일 알고리즘) ─────────────────────────
+  function scheduleReconnect(){
+    if (reconnecting) return;
+    reconnecting = true;
+    cleanupConnection();
+    const n = reconnectAttempt++;
+    const base = Math.min(RECONNECT_MAX, RECONNECT_BASE * Math.pow(RECONNECT_FACTOR, n));
+    const jitter = base * RECONNECT_JITTER * (Math.random() * 2 - 1);
+    const wait = Math.max(250, Math.round(base + jitter));
+    setStatus('warn', `재연결 대기 · ${Math.round(wait / 1000)}초 후`);
+    setTimeout(() => { reconnecting = false; startWatching(); }, wait);
+  }
+
+  function onConnectionStateChange(){
+    const state = pc.connectionState;
+    if (state === 'connected') { reconnectAttempt = 0; setStatus('live', 'LIVE'); }
+    else if (state === 'failed' || state === 'disconnected' || state === 'closed') scheduleReconnect();
+  }
+
+  function handleConnectFailure(e){
+    if (e instanceof AuthError) {
+      setStatus('error', 'PIN 오류');
+      flash('PIN이 올바르지 않습니다 — ← 변경에서 다시 확인하세요');
+      cleanupConnection();
+      return; // 잘못된 PIN 자동 재시도 금지(레이트리밋 방지)
+    }
+    console.warn('[homecam] WHEP 연결 실패', e);
+    setStatus('error', '연결 실패 — 재시도 예정');
+    scheduleReconnect();
+  }
+
+  // ───────────────────────── 프레임 정지 워치독 ─────────────────────────
+  function startWatchdog(){
+    clearInterval(watchdogTimer);
+    let lastFrames = 0, stalls = 0;
+    watchdogTimer = setInterval(() => {
+      if (!playerVideo.getVideoPlaybackQuality) return;
+      const frames = playerVideo.getVideoPlaybackQuality().totalVideoFrames;
+      if (frames === lastFrames) {
+        stalls++;
+        if (stalls >= WATCHDOG_MAX_STALLS) scheduleReconnect();
+      } else stalls = 0;
+      lastFrames = frames;
+    }, WATCHDOG_INTERVAL);
+  }
+
+  // ───────────────────────── 메인 시청 흐름 ─────────────────────────
+  async function startWatching(){
+    setStatus('connecting', '연결 중…');
+    pc = new RTCPeerConnection({ iceServers: ICE_SERVERS });
+    remoteStream = new MediaStream();
+    playerVideo.srcObject = remoteStream;
+    pc.addTransceiver('video', { direction: 'recvonly' });
+    pc.addTransceiver('audio', { direction: 'recvonly' });
+    pc.ontrack = (e) => remoteStream.addTrack(e.track);
+    pc.addEventListener('connectionstatechange', onConnectionStateChange);
+
+    try {
+      const offer = await pc.createOffer();
+      await pc.setLocalDescription(offer);
+      await waitForIceGatheringComplete(pc, ICE_GATHER_TIMEOUT);
+      sessionUrl = await playWhep(pc, config.path, config.pin);
+      setStatus('live', 'LIVE');
+      startWatchdog();
+      playerVideo.play().catch(() => {}); // 자동재생 실패는 무음 상태이므로 대개 통과, 실패 시 언뮤트 탭에서 재시도
+    } catch (e) {
+      handleConnectFailure(e);
+    }
+  }
+
+  function connectTo(path, pin){
+    config = { path, pin };
+    history.replaceState(null, '', `#cam=${encodeURIComponent(path)}&pin=${encodeURIComponent(pin)}`);
+    camNameLabel.textContent = path;
+    showScreen('player');
+    unmuteOverlay.hidden = false;
+    pushRecent(path, pin);
+    startWatching();
+  }
+
+  // ───────────────────────── §2.2 iOS 언뮤트(사용자 제스처 안에서 동기 실행) ─────────────────────────
+  document.getElementById('unmuteBtn').addEventListener('click', () => {
+    playerVideo.muted = false;
+    playerVideo.play().catch(() => {});
+    unmuteOverlay.hidden = true;
+  });
+
+  // ───────────────────────── §2.2 전체화면(iOS webkitEnterFullscreen 폴백) ─────────────────────────
+  document.getElementById('fullscreenBtn').addEventListener('click', () => {
+    if (playerVideo.webkitEnterFullscreen) playerVideo.webkitEnterFullscreen();
+    else if (playerVideo.requestFullscreen) playerVideo.requestFullscreen();
+    else if (playerWrap.requestFullscreen) playerWrap.requestFullscreen();
+    else flash('이 브라우저는 전체화면을 지원하지 않습니다');
+  });
+
+  // ───────────────────────── 재생 컨트롤 자동 숨김 ─────────────────────────
+  let chromeHideTimer = null;
+  function revealChrome(){
+    playerWrap.classList.remove('chrome-hidden');
+    clearTimeout(chromeHideTimer);
+    chromeHideTimer = setTimeout(() => playerWrap.classList.add('chrome-hidden'), 3200);
+  }
+  playerWrap.addEventListener('pointerdown', revealChrome);
+
+  // ───────────────────────── §2.3 로컬 녹화(서버 미경유 — 뷰어 브라우저 안에서만 저장) ─────────────────────────
+  function setRecordingUI(active){
+    document.getElementById('recordBtn').classList.toggle('recording', active);
+    document.getElementById('recordBtn').textContent = active ? '⏹' : '⏺';
+    recBadge.hidden = !active;
+    if (active) {
+      recStartedAt = Date.now();
+      recTimerHandle = setInterval(() => {
+        const s = Math.floor((Date.now() - recStartedAt) / 1000);
+        recTimer.textContent = `${String(Math.floor(s / 60)).padStart(2, '0')}:${String(s % 60).padStart(2, '0')}`;
+      }, 500);
+    } else {
+      clearInterval(recTimerHandle);
+    }
+  }
+
+  function startRecording(){
+    if (!remoteStream || remoteStream.getTracks().length === 0) { flash('아직 수신 중인 영상이 없습니다'); return; }
+    const mime = pickSupportedMime();
+    try {
+      recorder = mime ? new MediaRecorder(remoteStream, { mimeType: mime }) : new MediaRecorder(remoteStream);
+    } catch (e) {
+      flash('이 브라우저에서는 녹화를 지원하지 않습니다');
+      return;
+    }
+    recordedChunks = [];
+    recorder.ondataavailable = (e) => { if (e.data && e.data.size > 0) recordedChunks.push(e.data); };
+    recorder.onerror = () => { flash('녹화 중 오류가 발생했습니다'); stopRecording(); };
+    recorder.onstop = () => saveRecording(recorder.mimeType || mime);
+    try { recorder.start(1000); }
+    catch (e) { flash('녹화 시작 실패 — 이 브라우저에서는 미지원'); return; } // §2.3 isTypeSupported()가 true여도 start()가 실패하는 iOS 사례 대응
+    setRecordingUI(true);
+  }
+  function stopRecording(){
+    if (recorder && recorder.state !== 'inactive') recorder.stop();
+    setRecordingUI(false);
+  }
+  function saveRecording(mime){
+    if (recordedChunks.length === 0) { flash('저장할 녹화 내용이 없습니다'); return; }
+    const blob = new Blob(recordedChunks, { type: mime || 'video/webm' });
+    const ext = /mp4/i.test(mime || '') ? 'mp4' : 'webm';
+    const ts = new Date().toISOString().replace(/[:.]/g, '-');
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = `homecam-${config.path}-${ts}.${ext}`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(a.href), 10000);
+    recordedChunks = [];
+    flash('녹화 파일을 저장했습니다');
+  }
+  document.getElementById('recordBtn').addEventListener('click', () => {
+    if (recorder && recorder.state === 'recording') stopRecording();
+    else startRecording();
+  });
+
+  // ───────────────────────── 폼/내비게이션 ─────────────────────────
+  document.getElementById('setupForm').addEventListener('submit', (e) => {
+    e.preventDefault();
+    const path = document.getElementById('pathInput').value.trim();
+    const pin = document.getElementById('pinInput').value.trim();
+    const errEl = document.getElementById('setupErr');
+    if (!PATH_PIN_RE.test(path) || !PATH_PIN_RE.test(pin)) {
+      errEl.textContent = '영문 소문자·숫자·- _ 만 사용할 수 있습니다(1~32자).';
+      return;
+    }
+    errEl.textContent = '';
+    connectTo(path, pin);
+  });
+  document.getElementById('backBtn').addEventListener('click', () => {
+    cleanupConnection();
+    if (recorder && recorder.state === 'recording') stopRecording();
+    history.replaceState(null, '', location.pathname);
+    document.getElementById('pathInput').value = config.path;
+    renderRecent();
+    showScreen('setup');
+  });
+
+  window.addEventListener('beforeunload', cleanupConnection);
+
+  // ───────────────────────── 초기화 ─────────────────────────
+  renderRecent();
+  const initial = loadConfig();
+  if (PATH_PIN_RE.test(initial.path) && PATH_PIN_RE.test(initial.pin)) {
+    document.getElementById('pathInput').value = initial.path;
+    connectTo(initial.path, initial.pin);
+  } else {
+    showScreen('setup');
+  }
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,519 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+<meta name="color-scheme" content="dark">
+<meta name="theme-color" content="#0b0f10">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="mobile-web-app-capable" content="yes">
+<!-- 단일 파일 PWA — 외부 네트워크 요청 없이 홈 화면에 추가되도록 매니페스트를 데이터 URI로 인라인 -->
+<link rel="manifest" href="data:application/manifest+json,%7B%22name%22%3A%22HomeCam%20Camera%22%2C%22short_name%22%3A%22HomeCam%22%2C%22display%22%3A%22standalone%22%2C%22start_url%22%3A%22.%2Fcamera.html%22%2C%22background_color%22%3A%22%230b0f10%22%2C%22theme_color%22%3A%22%230b0f10%22%7D">
+<title>홈캠 카메라</title>
+<style>
+  /* ─────────────────────────────────────────────────────────────
+     이 페이지는 상시 가동되는 감시 도구이므로 시스템 테마와 무관하게
+     항상 어두운 화면 하나로 고정한다(다크모드 분기 없음) — 눈부심·발열·
+     번인을 줄이려는 §3.2의 목적과 직결되는 의도적 선택.
+     외부 폰트·라이브러리 요청 없음 — 오프라인에서도, 저사양 기기에서도
+     그대로 동작해야 하는 상시 가동 도구이기 때문.
+     ───────────────────────────────────────────────────────────── */
+  :root{
+    --bg:#0b0f10; --surface:#12181a; --surface-2:#1a2225; --line:#253034;
+    --ink:#e7ecea; --ink-soft:#93a3a8; --muted:#5c6c70;
+    --live:#3fbfc4; --warn:#e6a23c; --danger:#e2695c;
+    --font:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Noto Sans KR",sans-serif;
+    --font-mono:ui-monospace,"SF Mono",Menlo,Consolas,monospace;
+  }
+  *{box-sizing:border-box; -webkit-tap-highlight-color:transparent;}
+  [hidden]{display:none !important;} /* 클래스 규칙과의 우선순위 충돌 방지 */
+  html,body{height:100%; margin:0; background:var(--bg); overscroll-behavior:none;}
+  body{
+    font-family:var(--font); color:var(--ink); min-height:100dvh;
+    display:flex; align-items:center; justify-content:center;
+    user-select:none; -webkit-user-select:none;
+  }
+  @media (prefers-reduced-motion: reduce){ *{transition-duration:.001ms !important;} }
+
+  .screen{ position:fixed; inset:0; display:flex; }
+  .center{ margin:auto; width:100%; max-width:420px; padding:28px; }
+
+  /* ── 설정 화면 ── */
+  .brand{ font-size:13px; letter-spacing:.08em; text-transform:uppercase; color:var(--muted); margin-bottom:6px; }
+  h1{ font-size:22px; margin:0 0 4px; }
+  .lede{ color:var(--ink-soft); font-size:14px; margin:0 0 26px; line-height:1.6; }
+  label{ display:block; font-size:13px; color:var(--ink-soft); margin:18px 0 6px; }
+  input[type=text], input[type=password]{
+    width:100%; background:var(--surface); border:1px solid var(--line); color:var(--ink);
+    font-family:var(--font-mono); font-size:16px; padding:12px 14px; border-radius:6px; outline:none;
+  }
+  input:focus{ border-color:var(--live); }
+  .hint{ font-size:12px; color:var(--muted); margin-top:6px; }
+  .err{ font-size:12px; color:var(--danger); margin-top:6px; min-height:14px; }
+  button{
+    font-family:var(--font); font-size:15px; font-weight:600; border:none; border-radius:8px;
+    padding:14px 18px; cursor:pointer; width:100%;
+  }
+  .btn-primary{ background:var(--live); color:#04211f; margin-top:22px; }
+  .btn-primary:active{ opacity:.85; }
+  .btn-ghost{ background:var(--surface-2); color:var(--ink); border:1px solid var(--line); }
+  .btn-danger-ghost{ background:transparent; color:var(--danger); border:1px solid color-mix(in srgb, var(--danger) 40%, var(--line)); }
+
+  /* ── 프리뷰(설치) 화면 ── */
+  #previewScreen{ flex-direction:column; background:#000; }
+  #previewScreen video{ flex:1; width:100%; height:100%; object-fit:cover; background:#000; }
+  .preview-chrome{
+    position:absolute; left:0; right:0; bottom:0; padding:18px 20px calc(18px + env(safe-area-inset-bottom));
+    background:linear-gradient(to top, rgba(0,0,0,.75), transparent);
+    display:flex; flex-direction:column; gap:10px;
+  }
+  .status-row{ display:flex; align-items:center; gap:8px; font-size:13px; color:var(--ink-soft); }
+  .dot{ width:8px; height:8px; border-radius:50%; background:var(--muted); flex:0 0 auto; }
+  .dot.live{ background:var(--live); box-shadow:0 0 8px var(--live); }
+  .dot.warn{ background:var(--warn); }
+  .dot.error{ background:var(--danger); }
+  .battery{ margin-left:auto; font-family:var(--font-mono); color:var(--muted); }
+  .preview-top{
+    position:absolute; top:calc(14px + env(safe-area-inset-top)); left:16px; right:16px;
+    display:flex; justify-content:space-between; font-size:12px; color:var(--ink-soft);
+    font-family:var(--font-mono);
+  }
+
+  /* ── 블랙아웃(감시 중) 화면 ── */
+  #blackoutScreen{ background:#000; align-items:flex-end; justify-content:center; }
+  .peek{
+    position:absolute; bottom:0; left:0; right:0; padding:16px 20px calc(16px + env(safe-area-inset-bottom));
+    display:flex; align-items:center; gap:8px; font-size:12.5px; color:var(--ink-soft);
+    opacity:0; transition:opacity .25s ease; font-family:var(--font-mono);
+    background:linear-gradient(to top, rgba(255,255,255,.04), transparent);
+  }
+  .peek.show{ opacity:1; }
+  .blackout-hint{
+    position:absolute; top:calc(18px + env(safe-area-inset-top)); left:0; right:0; text-align:center;
+    font-size:11px; color:#2a3236; letter-spacing:.04em;
+  }
+
+  /* ── 설정/제어 패널 ── */
+  #panel{ background:rgba(0,0,0,.78); align-items:flex-end; z-index:20; }
+  .sheet{
+    width:100%; background:var(--surface); border-radius:16px 16px 0 0; padding:22px 22px calc(22px + env(safe-area-inset-bottom));
+    display:flex; flex-direction:column; gap:14px; max-height:80vh; overflow-y:auto;
+  }
+  .sheet h2{ font-size:16px; margin:0 0 4px; }
+  .kv{ display:flex; justify-content:space-between; font-size:13.5px; padding:9px 0; border-bottom:1px solid var(--line); }
+  .kv span:first-child{ color:var(--ink-soft); }
+  .kv span:last-child{ font-family:var(--font-mono); }
+</style>
+</head>
+<body>
+
+  <!-- ════════ 설정 화면 ════════ -->
+  <section id="setupScreen" class="screen">
+    <div class="center">
+      <div class="brand">HOMECAM · 카메라</div>
+      <h1>이 폰을 카메라로 등록</h1>
+      <p class="lede">경로 이름과 게시 PIN은 서버(MediaMTX)의 <code>authInternalUsers</code> 설정과
+        정확히 일치해야 합니다. 값은 이 기기에만 저장됩니다.</p>
+
+      <form id="setupForm">
+        <label for="pathInput">카메라 경로 (예: livingroom)</label>
+        <input id="pathInput" type="text" inputmode="latin" autocapitalize="off" autocorrect="off" placeholder="livingroom" maxlength="32">
+
+        <label for="pinInput">게시 PIN</label>
+        <input id="pinInput" type="password" inputmode="latin" autocapitalize="off" autocorrect="off" placeholder="영문/숫자 10자리 권장" maxlength="32">
+
+        <div class="err" id="setupErr"></div>
+        <button type="submit" class="btn-primary">카메라 시작</button>
+      </form>
+      <p class="hint">영문 소문자·숫자·<code>-</code> <code>_</code> 만 허용됩니다(§4.2 ASCII 화이트리스트). 서버 계정명은 <code>cam-&lt;경로&gt;</code>로 자동 매핑됩니다.</p>
+    </div>
+  </section>
+
+  <!-- ════════ 프리뷰(설치 확인) 화면 ════════ -->
+  <section id="previewScreen" class="screen" hidden>
+    <video id="localPreview" autoplay muted playsinline></video>
+    <div class="preview-top">
+      <span id="pathLabel">–</span>
+      <span id="batteryTop"></span>
+    </div>
+    <div class="preview-chrome">
+      <div class="status-row">
+        <span class="dot" id="statusDot"></span>
+        <span id="statusText">준비 중…</span>
+      </div>
+      <button class="btn-primary" id="engageBtn">설치 확인 완료 — 화면 끄기</button>
+      <button class="btn-ghost" id="reconfigureBtn">다시 설정</button>
+    </div>
+  </section>
+
+  <!-- ════════ 블랙아웃(감시 중) 화면 ════════ -->
+  <section id="blackoutScreen" class="screen" hidden>
+    <div class="blackout-hint">감시 중 · 탭: 상태 확인 · 길게 누르기: 설정</div>
+    <div class="peek" id="peek">
+      <span class="dot" id="peekDot"></span>
+      <span id="peekText">–</span>
+      <span class="battery" id="peekBattery"></span>
+    </div>
+  </section>
+
+  <!-- ════════ 설정/제어 패널(오버레이) ════════ -->
+  <section id="panel" class="screen" hidden>
+    <div class="sheet">
+      <h2>카메라 제어</h2>
+      <div class="kv"><span>경로</span><span id="panelPath">–</span></div>
+      <div class="kv"><span>상태</span><span id="panelStatus">–</span></div>
+      <div class="kv"><span>재연결 시도</span><span id="panelAttempts">0</span></div>
+      <div class="kv"><span>배터리</span><span id="panelBattery">지원 안 됨</span></div>
+      <button class="btn-ghost" id="wakeScreenBtn">화면 켜기(프리뷰로 복귀)</button>
+      <button class="btn-danger-ghost" id="resetBtn">경로·PIN 초기화</button>
+      <button class="btn-ghost" id="closePanelBtn">닫기</button>
+    </div>
+  </section>
+
+<script>
+(function(){
+  'use strict';
+
+  // ───────────────────────── §1/§2 상수 — 마스터플랜과 동일한 값 ─────────────────────────
+  const MEDIA_CONSTRAINTS = {
+    video: { width:{ideal:1280}, height:{ideal:720}, frameRate:{ideal:24,max:24}, facingMode:{ideal:'environment'} },
+    audio: { echoCancellation:true, noiseSuppression:true, channelCount:1 }
+  };
+  const VIDEO_MAX_BITRATE = 800_000;       // §1.4 트래픽 산정의 기준값(800kbps)
+  const H264_PROFILE_RE   = /profile-level-id=42e01f/i; // §2.1 Constrained Baseline
+  const ICE_SERVERS = [{ urls: 'stun:stun.l.google.com:19302' }]; // Tailscale 평면망이라 필수는 아니나 보험용
+  const ICE_GATHER_TIMEOUT = 4000;         // 완전 수집을 못해도 4초 후 진행(모바일망 지연 대비)
+  const RECONNECT_BASE = 1000, RECONNECT_FACTOR = 1.8, RECONNECT_MAX = 30000, RECONNECT_JITTER = 0.2; // §3.3
+  const WATCHDOG_INTERVAL = 60000, WATCHDOG_MAX_STALLS = 3; // §3.3 프레임 정지 워치독
+  const WAKE_RECHECK_INTERVAL = 30000;     // §3.3 Wake Lock 주기 점검
+  const BURNIN_SHIFT_INTERVAL = 5 * 60000; // §3.2 5분 주기 픽셀 시프트
+  const PATH_PIN_RE = /^[A-Za-z0-9_-]{1,32}$/; // §4.2 ASCII 화이트리스트
+
+  class AuthError extends Error {}
+
+  // ───────────────────────── 엘리먼트 ─────────────────────────
+  const screens = {
+    setup: document.getElementById('setupScreen'),
+    preview: document.getElementById('previewScreen'),
+    blackout: document.getElementById('blackoutScreen'),
+    panel: document.getElementById('panel'),
+  };
+  const previewVideo = document.getElementById('localPreview');
+  const statusDot = document.getElementById('statusDot');
+  const statusText = document.getElementById('statusText');
+  const pathLabel = document.getElementById('pathLabel');
+  const batteryTop = document.getElementById('batteryTop');
+  const peekDot = document.getElementById('peekDot');
+  const peekText = document.getElementById('peekText');
+  const peekBattery = document.getElementById('peekBattery');
+  const peekEl = document.getElementById('peek');
+
+  // ───────────────────────── 상태 ─────────────────────────
+  let config = { path:'', pin:'' };
+  let localStream = null, pc = null, sessionUrl = null;
+  let reconnectAttempt = 0, reconnecting = false, reconnectTimer = null;
+  let watchdogTimer = null, lastFrameCount = 0, stallCount = 0;
+  let wakeLock = null, burninTimer = null, peekHideTimer = null;
+
+  function showScreen(name){
+    Object.entries(screens).forEach(([k, el]) => { el.hidden = (k !== name); });
+  }
+
+  function setStatus(kind, text){
+    statusText.textContent = text;
+    peekText.textContent = text;
+    statusDot.className = 'dot ' + (kind === 'live' ? 'live' : kind === 'warn' ? 'warn' : kind === 'error' ? 'error' : '');
+    peekDot.className = statusDot.className;
+    document.getElementById('panelStatus').textContent = text;
+    document.getElementById('panelAttempts').textContent = String(reconnectAttempt);
+  }
+
+  // ───────────────────────── §4.2 설정 저장/로드 ─────────────────────────
+  function loadConfig(){
+    const hash = new URLSearchParams(location.hash.slice(1));
+    let storedPath = '', storedPin = '';
+    try { storedPath = localStorage.getItem('homecam.cam.path') || ''; storedPin = localStorage.getItem('homecam.cam.pin') || ''; }
+    catch (e) { /* 프라이빗 브라우징 등으로 저장소 접근 불가 — 해시 값만으로 계속 진행 */ }
+    return { path: hash.get('cam') || storedPath, pin: hash.get('pin') || storedPin };
+  }
+  function saveConfig(path, pin){
+    try { localStorage.setItem('homecam.cam.path', path); localStorage.setItem('homecam.cam.pin', pin); }
+    catch (e) { console.warn('[homecam] 로컬 저장 실패 — 이번 세션에서만 유지됩니다', e); }
+    history.replaceState(null, '', `#cam=${encodeURIComponent(path)}&pin=${encodeURIComponent(pin)}`);
+  }
+
+  // ───────────────────────── §2.1 H.264 강제 + 비트레이트 ─────────────────────────
+  function preferH264(peerConn, videoTrack){
+    try {
+      const transceiver = peerConn.getTransceivers().find(t => t.sender && t.sender.track === videoTrack);
+      const caps = window.RTCRtpSender && RTCRtpSender.getCapabilities && RTCRtpSender.getCapabilities('video');
+      if (!transceiver || !caps) return false;
+      const h264 = caps.codecs.filter(c => c.mimeType.toLowerCase() === 'video/h264' && H264_PROFILE_RE.test(c.sdpFmtpLine || ''));
+      if (h264.length === 0) return false; // 기기가 이 프로파일 인코딩을 못하면 기본 협상에 위임
+      transceiver.setCodecPreferences(h264);
+      return true;
+    } catch (e) { console.warn('[homecam] H.264 강제 실패 — 기본 코덱 협상 사용', e); return false; }
+  }
+  async function applyVideoBitrate(peerConn, maxBitrate){
+    const sender = peerConn.getSenders().find(s => s.track && s.track.kind === 'video');
+    if (!sender) return;
+    const params = sender.getParameters();
+    if (!params.encodings || params.encodings.length === 0) params.encodings = [{}];
+    params.encodings[0].maxBitrate = maxBitrate;
+    try { await sender.setParameters(params); } catch (e) { console.warn('[homecam] 비트레이트 설정 실패', e); }
+  }
+
+  function waitForIceGatheringComplete(peerConn, timeoutMs){
+    if (peerConn.iceGatheringState === 'complete') return Promise.resolve();
+    return new Promise(resolve => {
+      const check = () => { if (peerConn.iceGatheringState === 'complete') finish(); };
+      const finish = () => { peerConn.removeEventListener('icegatheringstatechange', check); resolve(); };
+      peerConn.addEventListener('icegatheringstatechange', check);
+      setTimeout(finish, timeoutMs);
+    });
+  }
+
+  // ───────────────────────── §1.2 WHIP 게시(POST /path/whip) ─────────────────────────
+  async function publishWhip(peerConn, path, pin){
+    const res = await fetch(`/${encodeURIComponent(path)}/whip`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/sdp',
+        'Authorization': 'Basic ' + btoa(`cam-${path}:${pin}`)
+      },
+      body: peerConn.localDescription.sdp
+    });
+    if (res.status === 401 || res.status === 403) throw new AuthError('PIN이 올바르지 않습니다');
+    if (res.status !== 201) throw new Error(`WHIP 게시 실패 (HTTP ${res.status})`);
+    const location = res.headers.get('Location');
+    const answerSdp = await res.text();
+    await peerConn.setRemoteDescription({ type: 'answer', sdp: answerSdp });
+    return resolveSessionUrl(location);
+  }
+  // 리버스 프록시 뒤의 MediaMTX가 Location 헤더에 내부 바인드 주소(예: 127.0.0.1:8889)를
+  // 절대 URL로 담아 돌려주는 사례가 보고되어 있다(github.com/bluenviron/mediamtx/issues/4504).
+  // 경로만 취하고 항상 현재 페이지와 같은 출처로 재작성해 이 문제를 원천 차단한다.
+  function resolveSessionUrl(location){
+    if (!location) return null;
+    const r = new URL(location, window.location.href);
+    return new URL(r.pathname + r.search, window.location.href).href;
+  }
+
+  function cleanupConnection(){
+    clearInterval(watchdogTimer);
+    if (sessionUrl) { fetch(sessionUrl, { method: 'DELETE' }).catch(() => {}); sessionUrl = null; }
+    if (pc) { try { pc.close(); } catch (e) {} pc = null; }
+  }
+
+  // ───────────────────────── §3.3 지수 백오프 재연결 ─────────────────────────
+  function scheduleReconnect(){
+    if (reconnecting) return;
+    reconnecting = true;
+    cleanupConnection();
+    const n = reconnectAttempt++;
+    const base = Math.min(RECONNECT_MAX, RECONNECT_BASE * Math.pow(RECONNECT_FACTOR, n));
+    const jitter = base * RECONNECT_JITTER * (Math.random() * 2 - 1);
+    const wait = Math.max(250, Math.round(base + jitter));
+    setStatus('warn', `재연결 대기 (${n + 1}번째 시도) · ${Math.round(wait / 1000)}초 후`);
+    reconnectTimer = setTimeout(() => { reconnecting = false; startPublishing(); }, wait);
+  }
+
+  function onConnectionStateChange(){
+    const state = pc.connectionState;
+    if (state === 'connected') { reconnectAttempt = 0; setStatus('live', '송출 중'); }
+    else if (state === 'failed' || state === 'disconnected' || state === 'closed') scheduleReconnect();
+  }
+
+  function handleConnectFailure(e){
+    if (e instanceof AuthError) {
+      setStatus('error', 'PIN 오류 — 길게 눌러 설정을 확인하세요');
+      cleanupConnection();
+      return; // §4.1 레이트리밋 방지 — 잘못된 PIN으로는 자동 재시도하지 않는다
+    }
+    console.warn('[homecam] 연결 실패', e);
+    setStatus('error', '연결 실패 — 재시도 예정');
+    scheduleReconnect();
+  }
+
+  // ───────────────────────── §3.3 프레임 정지 워치독(로컬 프리뷰로 캡처 상태 진단) ─────────────────────────
+  function startWatchdog(){
+    clearInterval(watchdogTimer);
+    lastFrameCount = 0; stallCount = 0;
+    watchdogTimer = setInterval(async () => {
+      if (!previewVideo.getVideoPlaybackQuality) return;
+      const frames = previewVideo.getVideoPlaybackQuality().totalVideoFrames;
+      if (frames === lastFrameCount) {
+        stallCount++;
+        if (stallCount === 1) await reacquireCameraTrack();
+        if (stallCount >= WATCHDOG_MAX_STALLS) { location.reload(); }
+      } else stallCount = 0;
+      lastFrameCount = frames;
+    }, WATCHDOG_INTERVAL);
+  }
+  async function reacquireCameraTrack(){
+    try {
+      const newStream = await navigator.mediaDevices.getUserMedia(MEDIA_CONSTRAINTS);
+      const newVideoTrack = newStream.getVideoTracks()[0];
+      const sender = pc && pc.getSenders().find(s => s.track && s.track.kind === 'video');
+      if (sender) await sender.replaceTrack(newVideoTrack);
+      previewVideo.srcObject = newStream;
+      if (localStream) localStream.getVideoTracks().forEach(t => t.stop());
+      localStream = newStream;
+    } catch (e) { console.warn('[homecam] 트랙 재획득 실패', e); }
+  }
+
+  // ───────────────────────── §3.3 Screen Wake Lock ─────────────────────────
+  async function acquireWakeLock(){
+    try {
+      if (!('wakeLock' in navigator)) return;
+      wakeLock = await navigator.wakeLock.request('screen');
+    } catch (e) { /* 미지원/거부 — 조용히 무시하고 계속 진행 */ }
+  }
+  document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') acquireWakeLock(); });
+  setInterval(() => { if (!wakeLock || wakeLock.released) acquireWakeLock(); }, WAKE_RECHECK_INTERVAL);
+
+  // ───────────────────────── §3.1 배터리 진단(표시 전용 — 실제 충전 제어는 스마트 플러그가 담당) ─────────────────────────
+  async function initBatteryDiagnostics(){
+    try {
+      if (!navigator.getBattery) return;
+      const battery = await navigator.getBattery();
+      const update = () => {
+        const pct = Math.round(battery.level * 100);
+        const label = `${pct}%${battery.charging ? ' ⚡' : ''}`;
+        batteryTop.textContent = label;
+        peekBattery.textContent = label;
+        document.getElementById('panelBattery').textContent = `${label} (navigator.getBattery — 비표준 API, 참고용)`;
+      };
+      battery.addEventListener('levelchange', update);
+      battery.addEventListener('chargingchange', update);
+      update();
+    } catch (e) { /* Safari 등 미지원 — 무시 */ }
+  }
+
+  // ───────────────────────── §3.2 번인 완화(5분 주기 위치 이동) ─────────────────────────
+  function startBurninMitigation(){
+    clearInterval(burninTimer);
+    const positions = ['left:0;right:auto', 'left:auto;right:0'];
+    let i = 0;
+    burninTimer = setInterval(() => {
+      i = (i + 1) % positions.length;
+      document.getElementById('blackoutScreen').querySelector('.blackout-hint').style.textAlign = i === 0 ? 'left' : 'right';
+    }, BURNIN_SHIFT_INTERVAL);
+  }
+
+  // ───────────────────────── 블랙아웃 탭/길게 누르기 ─────────────────────────
+  let pressTimer = null, longPressFired = false;
+  const blackoutEl = screens.blackout;
+  blackoutEl.addEventListener('pointerdown', () => {
+    longPressFired = false;
+    pressTimer = setTimeout(() => { longPressFired = true; openPanel(); }, 600);
+  });
+  blackoutEl.addEventListener('pointerup', () => {
+    clearTimeout(pressTimer);
+    if (!longPressFired) peekStatus();
+  });
+  blackoutEl.addEventListener('pointercancel', () => clearTimeout(pressTimer));
+
+  function peekStatus(){
+    peekEl.classList.add('show');
+    clearTimeout(peekHideTimer);
+    peekHideTimer = setTimeout(() => peekEl.classList.remove('show'), 4000);
+  }
+
+  function openPanel(){
+    document.getElementById('panelPath').textContent = config.path || '–';
+    showScreen('panel');
+  }
+  document.getElementById('closePanelBtn').addEventListener('click', () => {
+    showScreen(previewEngaged ? 'blackout' : 'preview');
+  });
+  document.getElementById('wakeScreenBtn').addEventListener('click', () => {
+    previewEngaged = false;
+    showScreen('preview');
+  });
+  document.getElementById('resetBtn').addEventListener('click', () => {
+    if (!confirm('경로와 PIN을 초기화하고 설정 화면으로 돌아갈까요? 송출이 중단됩니다.')) return;
+    cleanupConnection();
+    try { localStorage.removeItem('homecam.cam.path'); localStorage.removeItem('homecam.cam.pin'); } catch (e) {}
+    history.replaceState(null, '', location.pathname);
+    location.reload();
+  });
+
+  // ───────────────────────── 화면 전환: 프리뷰 ↔ 블랙아웃 ─────────────────────────
+  let previewEngaged = false;
+  document.getElementById('engageBtn').addEventListener('click', () => {
+    previewEngaged = true;
+    showScreen('blackout');
+    startBurninMitigation();
+  });
+  document.getElementById('reconfigureBtn').addEventListener('click', () => {
+    document.getElementById('resetBtn').click();
+  });
+
+  // ───────────────────────── 설정 폼 ─────────────────────────
+  document.getElementById('setupForm').addEventListener('submit', (e) => {
+    e.preventDefault();
+    const path = document.getElementById('pathInput').value.trim();
+    const pin = document.getElementById('pinInput').value.trim();
+    const errEl = document.getElementById('setupErr');
+    if (!PATH_PIN_RE.test(path) || !PATH_PIN_RE.test(pin)) {
+      errEl.textContent = '영문 소문자·숫자·- _ 만 사용할 수 있습니다(1~32자).';
+      return;
+    }
+    errEl.textContent = '';
+    saveConfig(path, pin);
+    config = { path, pin };
+    pathLabel.textContent = path;
+    startPublishing();
+  });
+
+  // ───────────────────────── 메인 송출 흐름 ─────────────────────────
+  async function startPublishing(){
+    showScreen('preview');
+    setStatus('connecting', '카메라 준비 중…');
+    try {
+      localStream = await navigator.mediaDevices.getUserMedia(MEDIA_CONSTRAINTS);
+    } catch (e) {
+      setStatus('error', '카메라/마이크 권한이 필요합니다');
+      return;
+    }
+    previewVideo.srcObject = localStream;
+
+    pc = new RTCPeerConnection({ iceServers: ICE_SERVERS });
+    localStream.getTracks().forEach(track => pc.addTrack(track, localStream));
+    preferH264(pc, localStream.getVideoTracks()[0]);
+    await applyVideoBitrate(pc, VIDEO_MAX_BITRATE);
+    pc.addEventListener('connectionstatechange', onConnectionStateChange);
+
+    try {
+      setStatus('connecting', '서버 연결 중…');
+      const offer = await pc.createOffer();
+      await pc.setLocalDescription(offer);
+      await waitForIceGatheringComplete(pc, ICE_GATHER_TIMEOUT);
+      sessionUrl = await publishWhip(pc, config.path, config.pin);
+      setStatus('live', '송출 중');
+      startWatchdog();
+    } catch (e) {
+      handleConnectFailure(e);
+    }
+  }
+
+  // ───────────────────────── 초기화 ─────────────────────────
+  window.addEventListener('beforeunload', cleanupConnection);
+  initBatteryDiagnostics();
+  acquireWakeLock();
+
+  config = loadConfig();
+  if (PATH_PIN_RE.test(config.path) && PATH_PIN_RE.test(config.pin)) {
+    document.getElementById('pathInput').value = config.path;
+    document.getElementById('pinInput').value = config.pin;
+    pathLabel.textContent = config.path;
+    startPublishing();
+  } else {
+    showScreen('setup');
+  }
+})();
+</script>
+</body>
+</html>

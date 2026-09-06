@@ -1,0 +1,25 @@
+[Unit]
+Description=MediaMTX (홈캠 WHIP/WHEP 릴레이)
+Documentation=https://mediamtx.org
+After=network-online.target tailscaled.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/mediamtx /etc/homecam/mediamtx.yml
+WorkingDirectory=/etc/homecam
+Restart=on-failure
+RestartSec=2
+
+# 최소 권한 원칙 — 8889는 비특권 포트라 root 권한이 전혀 필요 없다(setup.sh가
+# 만드는 전용 시스템 계정으로 실행).
+User=homecam
+Group=homecam
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadOnlyPaths=/etc/homecam
+
+[Install]
+WantedBy=multi-user.target

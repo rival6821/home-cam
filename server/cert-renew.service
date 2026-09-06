@@ -1,0 +1,7 @@
+[Unit]
+Description=홈캠 Tailscale 인증서 갱신(1회성)
+After=network-online.target tailscaled.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/cert-renew.sh

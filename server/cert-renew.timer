@@ -1,0 +1,11 @@
+[Unit]
+Description=홈캠 Tailscale 인증서 매월 갱신 (§7.1 월간 점검)
+
+[Timer]
+# Let's Encrypt 인증서 수명 90일 중 매월 갱신해 2회분 여유를 둔다.
+OnCalendar=monthly
+Persistent=true
+RandomizedDelaySec=1h
+
+[Install]
+WantedBy=timers.target

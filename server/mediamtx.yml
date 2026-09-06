@@ -1,0 +1,76 @@
+###############################################################################
+# MediaMTX 설정 — 홈캠 릴레이 마스터플랜 §1.2 / §4.2 / §4.3 / §5.1
+#
+# 이 파일은 /etc/homecam/mediamtx.yml 에 배치되고, mediamtx.service가 그 경로를
+# 인자로 넘겨 실행한다(setup.sh가 자동으로 처리). 값을 바꾼 뒤에는
+#   sudo systemctl restart mediamtx
+# 로 반영한다.
+###############################################################################
+
+logLevel: info
+logDestinations: [stdout]
+
+# ── 제어 API — §4.3 접속자 식별/강제 종료용 ──────────────────────────────────
+# 절대 공인망(Tailscale 포함)에 노출하지 않는다. 로컬호스트에만 바인딩하고,
+# 필요할 때 SSH 터널로 접근한다:
+#   ssh -L 9997:127.0.0.1:9997 <계정>@<호스트>
+# 그 후 브라우저에서 http://127.0.0.1:9997/v3/paths/list 로 세션 목록 확인,
+# http://127.0.0.1:9997/v3/rtspconns/kick/<id> (POST)로 강제 종료.
+api: true
+apiAddress: 127.0.0.1:9997
+
+# ── WebRTC(WHIP/WHEP) ────────────────────────────────────────────────────────
+webrtc: true
+webrtcAddress: :8889
+# Caddy가 443에서 TLS를 종단하고 127.0.0.1:8889로 평문 프록시하므로
+# MediaMTX 자체 TLS는 켜지 않는다.
+webrtcEncryption: false
+
+# Tailscale 평면망(WireGuard 터널)에서는 카메라·뷰어 모두 VPS의 Tailscale IP로
+# 직접 도달 가능해 host candidate만으로 연결이 성립한다(§1.5) — STUN은 필수가
+# 아니라 보험이다. 대칭키 인증이 필요 없는 공개 STUN이므로 username/password는
+# 비워둔다.
+webrtcICEServers2:
+  - url: stun:stun.l.google.com:19302
+    username: ''
+    password: ''
+    clientOnly: false
+
+# ── 계정 및 권한 — §4.1/§4.2 ─────────────────────────────────────────────────
+# 카메라 계정은 "cam-<경로>" 이름으로 자기 경로에만 게시(publish) 가능하고,
+# 뷰어 계정은 "family-viewer" 하나로 모든 경로를 읽기(read)만 가능하다.
+# 프런트엔드(camera.html/index.html)는 이 명명 규칙을 그대로 가정하고 동작한다.
+#
+# ⚠ 카메라를 추가할 때(§6 Phase 4, 예: 안방):
+#   1) 아래 목록에 cam-bedroom 계정을 똑같은 형태로 하나 더 추가
+#   2) path 값을 "bedroom"으로 지정
+#   3) sudo systemctl restart mediamtx
+authMethod: internal
+authInternalUsers:
+  - user: cam-livingroom
+    pass: CHANGE_ME_10CHAR_PUBLISH_PIN
+    permissions:
+      - action: publish
+        path: livingroom
+
+  - user: family-viewer
+    pass: CHANGE_ME_FAMILY_VIEWER_PIN
+    permissions:
+      - action: read
+        path:              # 빈 값 = 모든 경로 읽기 허용(공식 문서 표기)
+
+  # authInternalUsers에 없는 요청은 기본적으로 거부된다(명시적 허용 목록 방식).
+
+# ── 저장 정책 — §1.5 Zero-Knowledge/무저장 원칙 ──────────────────────────────
+# 전역 기본값과 와일드카드 경로 양쪽에 명시해 "디스크에 아무것도 안 남긴다"를
+# 이중으로 보장한다.
+pathDefaults:
+  record: false
+
+paths:
+  # 프런트엔드 설정 화면에서 임의로 정한 경로 이름(§4.2 ASCII 화이트리스트 통과 값)을
+  # 별도 선언 없이 즉석에서 허용하는 와일드카드. 실제 게시/읽기 권한은 위
+  # authInternalUsers가 결정하므로, 이 목록에 없다고 임의 경로가 함부로
+  # 만들어지지는 않는다.
+  all_others:
+    record: false
