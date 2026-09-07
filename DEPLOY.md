@@ -81,8 +81,9 @@ Tailscale 관리 콘솔(https://login.tailscale.com/admin/machines)에서 이 �
 
 ```bash
 sudo nano /etc/homecam/mediamtx.yml
-# CHANGE_ME_10CHAR_PUBLISH_PIN, CHANGE_ME_FAMILY_VIEWER_PIN 을
-# 각각 §4.1 기준 10자리 영문/숫자 PIN으로 교체
+# CHANGE_ME_10CHAR_PUBLISH_PIN(게시), CHANGE_ME_FAMILY_VIEWER_PIN(시청),
+# CHANGE_ME_API_ADMIN_PIN(§4 제어 API 전용, 가족 PIN과 다른 값으로) 을
+# 각각 §4.1 기준 10자리 영문/숫자 PIN으로 교체 — 세 값 모두 서로 달라야 한다
 
 cd ~/home-cam/server
 docker compose restart mediamtx
@@ -141,9 +142,17 @@ docker compose logs -f caddy
 # Tailscale·인증서 타이머 상태(이 둘은 호스트 네이티브라 systemd 그대로)
 sudo systemctl status tailscaled cert-renew.timer
 
-# 현재 접속 세션 확인(§4.3) — 로컬에서만 접근 가능하므로 SSH 터널 필요
-ssh -L 9997:127.0.0.1:9997 user@vps
-# 이후 로컬 브라우저에서 http://127.0.0.1:9997/v3/paths/list
+# 현재 접속 세션 확인(§4.3) — VPS 안에서 바로 curl해도 되고
+curl -u homecam-admin:<API 관리자 PIN> http://127.0.0.1:9997/v3/paths/list
+# (다른 기기에서 보고 싶으면 SSH 터널: ssh -L 9997:127.0.0.1:9997 user@vps 후 동일 curl)
+#
+# ⚠ 인증이 필요한 이유: MediaMTX 기본값은 "로컬호스트는 인증 없이 허용"이지만
+# Docker의 포트 포워딩(NAT)을 거치면 컨테이너 안 MediaMTX에는 요청이 진짜
+# 127.0.0.1로 안 보이므로 이 예외가 적용되지 않는다 — mediamtx.yml에 별도로
+# 만들어둔 homecam-admin 계정(action: api)으로 인증해야 한다.
+#
+# 강제 종료(예: 세션 id가 abc123)
+curl -u homecam-admin:<API 관리자 PIN> -X POST http://127.0.0.1:9997/v3/rtspconns/kick/abc123
 
 # 인증서 수동 갱신(평소엔 cert-renew.timer가 매월 자동 실행)
 sudo /usr/local/sbin/cert-renew.sh

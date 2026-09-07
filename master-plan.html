@@ -690,6 +690,18 @@ authInternalUsers:
         <h3><span class="h-num">4.3</span>접속자 식별 및 강제 종료</h3>
         <p>MediaMTX의 HTTP 제어 API(<span class="mono">/v3/paths/list</span>, <span class="mono">/v3/rtspconns/kick/{id}</span> 등 API 계열)로
         현재 세션 목록을 조회하고 특정 연결을 강제 종료할 수 있다. 뷰어 페이지에 "현재 시청자 N명" 표시와 관리자 전용 강제종료 버튼을 둔다.</p>
+
+        <div class="callout callout--warn">
+          <span class="badge">Docker와 인증</span>
+          <div>
+            <p>MediaMTX 기본값은 "로컬호스트 요청은 인증 없이 허용"이지만, 컨테이너로 구동하면(§5.1) 이 예외가
+            성립하지 않는다 — 호스트의 <span class="mono">127.0.0.1</span>에서 온 요청도 Docker의 포트
+            포워딩(NAT)을 거치며 컨테이너 안 MediaMTX에는 브리지 게이트웨이 IP로 찍히기 때문이다. 그래서
+            <span class="mono">action: api</span> 권한을 가진 전용 계정(<span class="mono">homecam-admin</span>)을
+            별도로 두고, API를 쓸 때마다 <span class="mono">curl -u homecam-admin:&lt;PIN&gt; ...</span>로 인증한다
+            — 이 PIN은 게시·시청 PIN과 다른, 운영자만 아는 값이다.</p>
+          </div>
+        </div>
       </section>
 
       <!-- ============ 05 ============ -->
