@@ -42,12 +42,21 @@ VPS의 저장소 클론을 Caddy가 직접 바인드 마운트하므로 이후 �
   파일이 이미 이 클론 안에 함께 있고, 이후 프런트엔드 수정분은 여기서
   `git pull` 한 번으로 반영되기 때문이다(§3).
 - **Tailscale 계정** (무료 Personal 플랜으로 충분 — 마스터플랜 §1.3)
+- **이 VPS를 다른 용도로 이미 쓰고 있다면, 443이 비어있는지 먼저 확인한다**:
+  ```bash
+  sudo ss -tlnp | grep :443
+  ```
+  뭔가(대개 nginx) 이미 443을 쓰고 있으면 `setup.sh` 실행 시 다른 포트를
+  지정하면 된다(§1) — 어차피 접근은 Tailscale로만 걸러지므로 443 고정일
+  필요가 없다. `setup.sh`도 이 상태를 자체적으로 감지해 명확한 오류를 낸다.
 
 ## 1. 백엔드 최초 배포 (한 번만)
 
 ```bash
 cd ~/home-cam/server
 sudo ./setup.sh <실제-tailnet-호스트명>
+# 443이 이미 다른 서비스(예: nginx)에 점유돼 있다면 두 번째 인자로 다른 포트를:
+sudo ./setup.sh <실제-tailnet-호스트명> 8443
 ```
 
 호스트명은 아직 모른다면 `tailscale up`을 먼저 대화형으로 한 번 실행해
@@ -64,9 +73,9 @@ Tailscale 관리 콘솔(https://login.tailscale.com/admin/machines)에서 이 �
 |---|---|
 | 1 | SSH 키 접속 확인 후 비밀번호 로그인 차단, `ufw` 기본 정책만 설정 |
 | 2 | Tailscale 설치·인증, `tailscale cert`로 HTTPS 인증서 발급 |
-| 3 | Docker 설치, `.env`에 `TAILSCALE_IP` 기록, `mediamtx.yml` 최초 배치 |
-| 4 | `Caddyfile`을 실제 호스트명으로 치환, `docker compose up -d`로 컨테이너 기동 |
-| 5 | `ufw` 최종 잠금 (Tailscale UDP 41641만 인바운드 허용) |
+| 3 | Docker 설치, `.env`에 `TAILSCALE_IP`·`HOMECAM_PORT` 기록(포트 충돌 시 여기서 중단), `mediamtx.yml` 최초 배치 |
+| 4 | `Caddyfile`을 실제 호스트명·포트로 치환, `docker compose up -d`로 컨테이너 기동 |
+| 5 | `ufw` 최종 잠금 (Tailscale UDP 41641만 인바운드 허용 — 포트와 무관하게 인터페이스 전체를 허용하므로 위 포트를 바꿔도 추가 방화벽 조치는 필요 없다) |
 
 ## 2. PIN 설정 (필수 — 기본값은 자리 표시자다)
 
@@ -105,8 +114,11 @@ cd ~/home-cam && git pull
 
 | 기기 | URL |
 |---|---|
-| 카메라(구형 안드로이드, Chrome) | `https://<호스트>/camera.html#cam=livingroom&pin=<게시PIN>` |
-| 뷰어(아이폰·가족 기기) | `https://<호스트>/#cam=livingroom&pin=<시청PIN>` |
+| 카메라(구형 안드로이드, Chrome) | `https://<호스트>[:포트]/camera.html#cam=livingroom&pin=<게시PIN>` |
+| 뷰어(아이폰·가족 기기) | `https://<호스트>[:포트]/#cam=livingroom&pin=<시청PIN>` |
+
+`[:포트]`는 `setup.sh`에 기본값 443 대신 다른 포트를 지정했을 때만 붙인다
+(예: `:8443`) — `setup.sh`가 배포 완료 시 정확한 URL을 그대로 출력해준다.
 
 마스터플랜 §6 Phase 1~2 순서대로: 먼저 PC 브라우저 두 탭으로 왕복 확인 →
 실제 구형 폰으로 송출 → LTE 아이폰으로 시청.
@@ -144,13 +156,15 @@ sudo /usr/local/sbin/cert-renew.sh
 ```bash
 sudo ufw status verbose
 # 기대 결과: 41641/udp(Tailscale)만 허용, 그 외 incoming 전체 거부.
-# 443/80이 이 목록에 없어야 정상이다 — Caddy 컨테이너는 Tailscale IP에만
-# 바인딩되어 있어야 한다(docker-compose.yml의 "${TAILSCALE_IP}:443:443").
+# 사용 중인 홈캠 포트(기본 443, 아니면 setup.sh에 지정한 값)가 이 목록에
+# 없어야 정상이다 — Caddy 컨테이너는 Tailscale IP에만 바인딩되어 있어야 한다
+# (docker-compose.yml의 "${TAILSCALE_IP}:${HOMECAM_PORT}:${HOMECAM_PORT}").
 
-# Docker가 ufw를 우회해 443을 공인 인터넷에 열어버리지 않았는지 직접 확인:
-sudo ss -tlnp | grep :443
-# 기대 결과: "100.x.x.x:443"처럼 Tailscale IP 하나만 보여야 한다.
-# "0.0.0.0:443"이 보이면 docker-compose.yml의 ports 바인딩이 잘못된 것이다.
+# Docker가 ufw를 우회해 공인 인터넷에 열어버리지 않았는지 직접 확인
+# (아래 <포트>는 setup.sh에 준 값, 기본 443):
+sudo ss -tlnp | grep :<포트>
+# 기대 결과: "100.x.x.x:<포트>"처럼 Tailscale IP 하나만 보여야 한다.
+# "0.0.0.0:<포트>"가 보이면 docker-compose.yml의 ports 바인딩이 잘못된 것이다.
 ```
 
 Oracle Cloud 등 클라우드 VPS라면 여기에 더해 §0에서 설정한 VCN Security

@@ -1,18 +1,23 @@
 ###############################################################################
 # Caddyfile — 홈캠 릴레이 마스터플랜 §5.1(4단계) / §5.2
 #
-# 정적 파일(camera.html, index.html)과 MediaMTX의 WHIP/WHEP을 동일 출처(HTTPS
-# 443)로 통합해 CORS·혼합 콘텐츠 문제를 원천 제거한다. TLS는 Caddy 자체 ACME가
-# 아니라 Tailscale이 발급한 인증서를 사용한다(setup.sh / cert-renew.sh 참고).
+# 정적 파일(camera.html, index.html)과 MediaMTX의 WHIP/WHEP을 동일 출처(HTTPS)로
+# 통합해 CORS·혼합 콘텐츠 문제를 원천 제거한다. TLS는 Caddy 자체 ACME가 아니라
+# Tailscale이 발급한 인증서를 사용한다(setup.sh / cert-renew.sh 참고).
+#
+# 포트는 기본 443이지만 고정값이 아니다 — 접근 자체가 Tailscale로 걸러지므로
+# 443이어야 할 이유가 없고, 그 VPS를 다른 서비스와 같이 쓰는 중이라 443이 이미
+# 점유돼 있으면(예: 기존 nginx) setup.sh 두 번째 인자로 다른 포트를 지정하면
+# 된다 — 아래 포트 자리표시자는 그때 자동 치환된다.
 #
 # 배포 위치: /etc/homecam/Caddyfile (docker-compose.yml이 caddy 컨테이너 안
 # /etc/caddy/Caddyfile로 읽기전용 마운트한다 — setup.sh가 아래 자리표시자를
-# 실제 호스트명으로 치환해 이 경로에 생성한다). 수정 후 반영은
+# 실제 호스트명·포트로 치환해 이 경로에 생성한다). 수정 후 반영은
 #   docker exec homecam-caddy caddy reload --config /etc/caddy/Caddyfile
 ###############################################################################
 
-# ⚠ 실제 tailnet 호스트명으로 교체 (예: cam-vps.tail1a2b3.ts.net)
-YOUR-HOST.tailXXXXX.ts.net {
+# ⚠ 실제 tailnet 호스트명·포트로 교체 (예: cam-vps.tail1a2b3.ts.net:443)
+YOUR-HOST.tailXXXXX.ts.net:HOMECAM_PORT_PLACEHOLDER {
 
 	tls /etc/homecam/certs/YOUR-HOST.tailXXXXX.ts.net.crt \
 	    /etc/homecam/certs/YOUR-HOST.tailXXXXX.ts.net.key

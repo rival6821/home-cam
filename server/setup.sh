@@ -10,8 +10,10 @@
 # — 자세한 이유는 docker-compose.yml 상단 주석 참고.
 #
 # 사용법:
-#   sudo ./setup.sh <tailnet-호스트명>
+#   sudo ./setup.sh <tailnet-호스트명> [포트]
 #   예) sudo ./setup.sh cam-vps.tail1a2b3.ts.net
+#   예) sudo ./setup.sh cam-vps.tail1a2b3.ts.net 8443   # 443이 이미 다른 용도로
+#       점유된 VPS에서 — 접근이 Tailscale로 걸러지므로 443 고정일 필요가 없다.
 #
 # 선택: 미리 발급한 Tailscale Auth Key가 있으면 브라우저 인증 없이 자동 로그인.
 #   sudo TS_AUTHKEY=tskey-auth-xxxx ./setup.sh cam-vps.tail1a2b3.ts.net
@@ -22,8 +24,13 @@
 set -euo pipefail
 
 HOST="${1:-}"
+PORT="${2:-443}"
 if [ -z "$HOST" ]; then
-  echo "사용법: sudo $0 <tailnet-호스트명>  (예: cam-vps.tail1a2b3.ts.net)" >&2
+  echo "사용법: sudo $0 <tailnet-호스트명> [포트, 기본 443]" >&2
+  exit 1
+fi
+if ! [[ "$PORT" =~ ^[0-9]+$ ]] || [ "$PORT" -lt 1 ] || [ "$PORT" -gt 65535 ]; then
+  echo "포트는 1~65535 사이 숫자여야 합니다: $PORT" >&2
   exit 1
 fi
 if [ "$(id -u)" -ne 0 ]; then
@@ -119,12 +126,26 @@ if ! command -v docker >/dev/null 2>&1; then
 fi
 systemctl enable --now docker
 
-# TAILSCALE_IP: docker-compose.yml이 Caddy의 443을 이 IP에만 바인딩한다.
-# "0.0.0.0"으로 게시하면 Docker가 ufw를 우회해 공인 인터넷에 노출될 수 있으므로
-# (docker-compose.yml 상단 주석 참고) 반드시 구체적인 IP로 못박는다.
+# TAILSCALE_IP: docker-compose.yml이 Caddy를 이 IP에만 바인딩한다. "0.0.0.0"으로
+# 게시하면 Docker가 ufw를 우회해 공인 인터넷에 노출될 수 있으므로(docker-compose.yml
+# 상단 주석 참고) 반드시 구체적인 IP로 못박는다.
 TAILSCALE_IP="$(tailscale ip -4)"
-echo "TAILSCALE_IP=$TAILSCALE_IP" > "$SCRIPT_DIR/.env"
-echo "  .env 생성: TAILSCALE_IP=$TAILSCALE_IP"
+{
+  echo "TAILSCALE_IP=$TAILSCALE_IP"
+  echo "HOMECAM_PORT=$PORT"
+} > "$SCRIPT_DIR/.env"
+echo "  .env 생성: TAILSCALE_IP=$TAILSCALE_IP, HOMECAM_PORT=$PORT"
+
+# 이 VPS를 다른 용도로도 쓰고 있으면 443(또는 지정한 포트)이 이미 nginx 등
+# 다른 프로세스에 점유돼 있을 수 있다 — Docker가 뒤늦게 바인딩에 실패하며
+# 애매한 오류를 내기 전에 여기서 미리 확인해 명확한 안내를 준다.
+if ss -tln 2>/dev/null | awk '{print $4}' | grep -qE "[:.]$PORT\$"; then
+  echo "  ⚠ 포트 $PORT 을(를) 이미 다른 프로세스가 쓰고 있습니다:" >&2
+  ss -tlnp 2>/dev/null | grep ":$PORT " >&2 || true
+  echo "    이 VPS를 다른 서비스와 같이 쓰고 있다면 다른 포트로 다시 실행하세요:" >&2
+  echo "      sudo $0 $HOST <다른-포트>  (예: 8443)" >&2
+  exit 1
+fi
 
 if [ ! -f "$STATE_DIR/mediamtx.yml" ]; then
   install -m 0600 "$SCRIPT_DIR/mediamtx.yml" "$STATE_DIR/mediamtx.yml"
@@ -145,7 +166,8 @@ if [ ! -f "$SCRIPT_DIR/../index.html" ] || [ ! -f "$SCRIPT_DIR/../camera.html" ]
   exit 1
 fi
 
-sed "s/YOUR-HOST.tailXXXXX.ts.net/$HOST/g" "$SCRIPT_DIR/Caddyfile" > "$STATE_DIR/Caddyfile"
+sed -e "s/YOUR-HOST.tailXXXXX.ts.net/$HOST/g" -e "s/HOMECAM_PORT_PLACEHOLDER/$PORT/g" \
+  "$SCRIPT_DIR/Caddyfile" > "$STATE_DIR/Caddyfile"
 
 (cd "$SCRIPT_DIR" && docker compose up -d)
 
@@ -158,13 +180,16 @@ ufw allow in on tailscale0
 ufw allow 41641/udp comment 'Tailscale WireGuard'
 ufw --force enable
 
+PORT_SUFFIX=""
+[ "$PORT" != "443" ] && PORT_SUFFIX=":$PORT"
+
 echo
 echo "════════════════════════════════════════════════════════════"
 echo " 배포 완료 — 남은 수동 작업"
 echo "════════════════════════════════════════════════════════════"
 echo " 1) $STATE_DIR/mediamtx.yml 의 CHANGE_ME_* PIN을 실제 값으로 교체 후"
 echo "    (server/ 디렉터리에서) docker compose restart mediamtx"
-echo " 2) 카메라 폰: https://$HOST/camera.html#cam=livingroom&pin=<발행PIN>"
-echo " 3) 뷰어 기기: https://$HOST/#cam=livingroom&pin=<시청PIN>"
+echo " 2) 카메라 폰: https://$HOST$PORT_SUFFIX/camera.html#cam=livingroom&pin=<발행PIN>"
+echo " 3) 뷰어 기기: https://$HOST$PORT_SUFFIX/#cam=livingroom&pin=<시청PIN>"
 echo " 4) 상태 확인: docker compose ps / docker compose logs -f (server/ 디렉터리에서)"
 echo "════════════════════════════════════════════════════════════"

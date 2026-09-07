@@ -11,11 +11,17 @@
 # 처리하며, 이 규칙이 ufw의 차단 규칙보다 먼저 매칭된다 — "0.0.0.0으로 연
 # 포트는 ufw가 막아준다"는 전제가 Docker 앞에서는 성립하지 않는다. 이 파일은
 # 아래 두 가지로 그 위험을 원천 차단한다:
-#   1) caddy의 443만 게시하고, 반드시 "${TAILSCALE_IP}:443:443"처럼 IP를 못박아
-#      바인딩한다 — Tailscale IP로만 바인딩된 소켓은 애초에 공인 인터페이스로
-#      DNAT될 여지가 없다 ("443:443"으로 절대 바꾸지 말 것).
+#   1) caddy는 "${TAILSCALE_IP}:${HOMECAM_PORT}:${HOMECAM_PORT}"처럼 반드시
+#      Tailscale IP를 못박아 바인딩한다 — Tailscale IP로만 바인딩된 소켓은
+#      애초에 공인 인터페이스로 DNAT될 여지가 없다. IP 부분을 "0.0.0.0"이나
+#      생략형으로 절대 바꾸지 말 것.
 #   2) mediamtx의 WHIP/WHEP(8889)는 호스트에 전혀 게시하지 않는다 — internal
 #      브리지 네트워크로 caddy 컨테이너만 접근한다.
+#
+# HOMECAM_PORT: 기본 443이지만 고정값이 아니다 — Tailscale로만 접근 가능하므로
+# 443이어야 할 이유가 없고, VPS를 다른 서비스와 같이 쓰는 중이라 443이 이미
+# 점유돼 있으면(예: 기존 nginx) setup.sh 두 번째 인자로 다른 포트를 넘기면
+# .env에 자동 반영된다.
 #
 # 배포(setup.sh가 자동 실행하지만 수동으로도):
 #   cd server && docker compose up -d
@@ -55,8 +61,8 @@ services:
       - internal
     ports:
       # ⚠ 반드시 Tailscale IP로 명시 바인딩(위 경고 참고). setup.sh가 .env에
-      # `tailscale ip -4`의 결과를 TAILSCALE_IP로 채워 넣는다.
-      - "${TAILSCALE_IP}:443:443"
+      # `tailscale ip -4`의 결과를 TAILSCALE_IP로, 포트를 HOMECAM_PORT로 채워 넣는다.
+      - "${TAILSCALE_IP}:${HOMECAM_PORT}:${HOMECAM_PORT}"
 
 networks:
   internal:

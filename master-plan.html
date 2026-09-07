@@ -737,7 +737,10 @@ record: <span class="k">no</span>   <span class="c1"># 무저장 원칙 — 디�
           <h3>4. Caddy로 동일 출처 통합</h3>
           <p>정적 HTML과 MediaMTX 리버스 프록시를 하나의 HTTPS 오리진으로 묶는다. 두 컨테이너는
           Docker 내부 브리지 네트워크로만 통신하고("mediamtx"는 컨테이너 이름이 아니라 Compose
-          서비스명 — Docker 내장 DNS가 풀어준다), 공인 인터넷에는 아무것도 게시하지 않는다.</p>
+          서비스명 — Docker 내장 DNS가 풀어준다), 공인 인터넷에는 아무것도 게시하지 않는다.
+          포트는 기본 443이지만 고정값은 아니다 — 접근이 어차피 Tailscale로 걸러지므로,
+          VPS를 다른 서비스와 같이 쓰다가 443이 이미 점유돼 있으면(예: 기존 nginx)
+          <span class="mono">setup.sh</span>에 다른 포트를 지정하면 그만이다.</p>
           <pre class="code"><span class="c1"># docker-compose.yml</span>
 services:
   mediamtx:
