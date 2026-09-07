@@ -5,8 +5,10 @@
 # 443)로 통합해 CORS·혼합 콘텐츠 문제를 원천 제거한다. TLS는 Caddy 자체 ACME가
 # 아니라 Tailscale이 발급한 인증서를 사용한다(setup.sh / cert-renew.sh 참고).
 #
-# 배포 위치: /etc/caddy/Caddyfile
-# 아래 두 자리 표시자를 실제 값으로 바꾼 뒤 `sudo systemctl reload caddy`.
+# 배포 위치: /etc/homecam/Caddyfile (docker-compose.yml이 caddy 컨테이너 안
+# /etc/caddy/Caddyfile로 읽기전용 마운트한다 — setup.sh가 아래 자리표시자를
+# 실제 호스트명으로 치환해 이 경로에 생성한다). 수정 후 반영은
+#   docker exec homecam-caddy caddy reload --config /etc/caddy/Caddyfile
 ###############################################################################
 
 # ⚠ 실제 tailnet 호스트명으로 교체 (예: cam-vps.tail1a2b3.ts.net)
@@ -31,7 +33,10 @@ YOUR-HOST.tailXXXXX.ts.net {
 		-Server
 	}
 
-	# §1.2 WHIP/WHEP — MediaMTX(로컬 8889)로 프록시.
+	# §1.2 WHIP/WHEP — MediaMTX로 프록시. "mediamtx"는 컨테이너 이름이 아니라
+	# docker-compose.yml의 서비스 이름으로, 같은 internal 브리지 네트워크 안에서
+	# Docker 내장 DNS가 이 이름을 mediamtx 컨테이너의 IP로 풀어준다(호스트도
+	# 아니고 127.0.0.1도 아니다 — 컨테이너는 서로 별도의 네트워크 네임스페이스).
 	# 경로 뒤 세그먼트(/whip/<session-id> 등, DELETE 종료용)까지 함께 넘기도록
 	# 끝을 앵커하지 않는다 — mediamtx가 리버스 프록시 뒤에서 Location 헤더에
 	# 부가 경로를 붙여 돌려주는 경우까지 대비한 것(github.com/bluenviron/mediamtx
@@ -39,7 +44,7 @@ YOUR-HOST.tailXXXXX.ts.net {
 	# 내부 바인드 주소가 아닌 공개 호스트명을 인지하도록 한다.
 	@media path_regexp ^/[A-Za-z0-9_-]+/(whip|whep)(/.*)?$
 	handle @media {
-		reverse_proxy 127.0.0.1:8889 {
+		reverse_proxy mediamtx:8889 {
 			header_up Host {host}
 		}
 	}

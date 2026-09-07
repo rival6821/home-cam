@@ -5,6 +5,10 @@
 # 대상: Ubuntu/Debian(apt) 기반 VPS. Oracle Cloud Free Tier의 Ubuntu 이미지
 # 기준으로 작성했다. 다른 배포판이면 패키지 설치 부분만 손보면 된다.
 #
+# Caddy·MediaMTX는 Docker 컨테이너로 구동한다(docker-compose.yml). Tailscale은
+# 인증서 발급이 호스트의 tailnet 신원에 묶여 있어 호스트에 네이티브로 남긴다
+# — 자세한 이유는 docker-compose.yml 상단 주석 참고.
+#
 # 사용법:
 #   sudo ./setup.sh <tailnet-호스트명>
 #   예) sudo ./setup.sh cam-vps.tail1a2b3.ts.net
@@ -46,11 +50,8 @@ echo "── 1/5 초기 하드닝 ──"
 mkdir -p "$STATE_DIR" "$STATE_DIR/certs"
 echo "$HOST" > "$STATE_DIR/hostname"
 
-id -u homecam >/dev/null 2>&1 || useradd --system --no-create-home --shell /usr/sbin/nologin homecam
-chown -R homecam:homecam "$STATE_DIR"
-
 apt-get update -y
-apt-get install -y curl ufw
+apt-get install -y curl ufw ca-certificates
 
 # SSH 비밀번호 로그인 차단은 "되돌리기 어려운" 조치이므로, 키 기반 접속이
 # 이미 확보된 경우에만 진행한다 — 확인 없이 껐다가는 원격 접속 자체가
@@ -101,89 +102,52 @@ cat <<'EOF'
 EOF
 read -r -p "  위 설정을 마쳤으면 Enter를 눌러 계속하세요..." _
 
-echo "  Caddy 설치 전, 인증서를 먼저 발급합니다."
+echo "  인증서를 먼저 발급합니다(Caddy는 4단계에서 컨테이너로 기동)."
 install -m 0755 "$SCRIPT_DIR/cert-renew.sh" /usr/local/sbin/cert-renew.sh
+/usr/local/sbin/cert-renew.sh || {
+  echo "인증서 발급에 실패했습니다. 위 admin 콘솔 설정을 다시 확인하세요." >&2
+  exit 1
+}
 
 ###############################################################################
-# 3단계 — MediaMTX 설치 (§5.1-3)
+# 3단계 — Docker 설치 (§5.1-3, MediaMTX·Caddy의 실행 기반)
 ###############################################################################
-echo "── 3/5 MediaMTX 설치 ──"
+echo "── 3/5 Docker 설치 ──"
 
-case "$(uname -m)" in
-  x86_64)  MTX_ARCH=amd64 ;;
-  aarch64) MTX_ARCH=arm64 ;;
-  *) echo "지원하지 않는 아키텍처입니다: $(uname -m)" >&2; exit 1 ;;
-esac
-
-if ! command -v mediamtx >/dev/null 2>&1; then
-  DL_URL="$(curl -fsSL https://api.github.com/repos/bluenviron/mediamtx/releases/latest \
-    | grep -o "\"browser_download_url\": *\"[^\"]*linux_${MTX_ARCH}\.tar\.gz\"" \
-    | head -n1 | sed -E 's/.*"(https[^"]+)"/\1/')"
-  if [ -z "$DL_URL" ]; then
-    echo "MediaMTX 다운로드 URL을 자동으로 찾지 못했습니다." >&2
-    echo "https://github.com/bluenviron/mediamtx/releases 에서 linux_${MTX_ARCH}.tar.gz를 받아" >&2
-    echo "mediamtx 바이너리를 /usr/local/bin/mediamtx 에 직접 설치한 뒤 다시 실행하세요." >&2
-    exit 1
-  fi
-  TMP="$(mktemp -d)"
-  curl -fsSL "$DL_URL" -o "$TMP/mediamtx.tar.gz"
-  tar -xzf "$TMP/mediamtx.tar.gz" -C "$TMP"
-  install -m 0755 "$TMP/mediamtx" /usr/local/bin/mediamtx
-  rm -rf "$TMP"
+if ! command -v docker >/dev/null 2>&1; then
+  curl -fsSL https://get.docker.com | sh
 fi
+systemctl enable --now docker
+
+# TAILSCALE_IP: docker-compose.yml이 Caddy의 443을 이 IP에만 바인딩한다.
+# "0.0.0.0"으로 게시하면 Docker가 ufw를 우회해 공인 인터넷에 노출될 수 있으므로
+# (docker-compose.yml 상단 주석 참고) 반드시 구체적인 IP로 못박는다.
+TAILSCALE_IP="$(tailscale ip -4)"
+echo "TAILSCALE_IP=$TAILSCALE_IP" > "$SCRIPT_DIR/.env"
+echo "  .env 생성: TAILSCALE_IP=$TAILSCALE_IP"
 
 if [ ! -f "$STATE_DIR/mediamtx.yml" ]; then
-  install -m 0640 -o homecam -g homecam "$SCRIPT_DIR/mediamtx.yml" "$STATE_DIR/mediamtx.yml"
+  install -m 0600 "$SCRIPT_DIR/mediamtx.yml" "$STATE_DIR/mediamtx.yml"
   echo "  ⚠ $STATE_DIR/mediamtx.yml 의 CHANGE_ME_* PIN 값을 실제 PIN으로 바꾼 뒤"
-  echo "    'sudo systemctl restart mediamtx' 로 반영하세요."
+  echo "    (server/ 디렉터리에서) 'docker compose restart mediamtx' 로 반영하세요."
 else
   echo "  기존 $STATE_DIR/mediamtx.yml 을 덮어쓰지 않습니다(이미 설정됨)."
 fi
 
-install -m 0644 "$SCRIPT_DIR/mediamtx.service" /etc/systemd/system/mediamtx.service
-
 ###############################################################################
-# 4단계 — Caddy 설치 및 동일 출처 통합 (§5.1-4)
+# 4단계 — Caddy 설정 및 컨테이너 스택 기동 (§5.1-4)
 ###############################################################################
-echo "── 4/5 Caddy 설치 ──"
+echo "── 4/5 Caddy 설정 및 컨테이너 기동 ──"
 
-if ! command -v caddy >/dev/null 2>&1; then
-  apt-get install -y debian-keyring debian-archive-keyring apt-transport-https
-  curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/gpg.key' \
-    | gpg --dearmor -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg
-  curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/debian.deb.txt' \
-    > /etc/apt/sources.list.d/caddy-stable.list
-  chmod o+r /usr/share/keyrings/caddy-stable-archive-keyring.gpg /etc/apt/sources.list.d/caddy-stable.list
-  apt-get update -y
-  apt-get install -y caddy
-fi
-
-mkdir -p /var/www/homecam
-if [ -f "$SCRIPT_DIR/../index.html" ] && [ -f "$SCRIPT_DIR/../camera.html" ]; then
-  cp "$SCRIPT_DIR/../index.html" "$SCRIPT_DIR/../camera.html" /var/www/homecam/
-  echo "  camera.html / index.html 을 /var/www/homecam/ 에 배치했습니다."
-else
-  echo "  ⚠ camera.html / index.html을 찾지 못했습니다 — /var/www/homecam/ 에 직접 업로드하세요."
-fi
-chown -R caddy:caddy /var/www/homecam
-
-sed "s/YOUR-HOST.tailXXXXX.ts.net/$HOST/g" "$SCRIPT_DIR/Caddyfile" > /etc/caddy/Caddyfile
-
-# 이제 인증서를 발급(§5.1-2에서 준비만 해둔 것을 여기서 실행) — Caddy가
-# 시작 시점부터 유효한 cert/key를 찾을 수 있도록 Caddy 설치 직후, 첫 시작 전에 실행.
-/usr/local/sbin/cert-renew.sh || {
-  echo "인증서 발급에 실패했습니다. 2단계의 admin 콘솔 설정을 다시 확인하세요." >&2
+if [ ! -f "$SCRIPT_DIR/../index.html" ] || [ ! -f "$SCRIPT_DIR/../camera.html" ]; then
+  echo "  ⚠ camera.html / index.html을 찾지 못했습니다 — 저장소 루트에 두 파일이" >&2
+  echo "    있어야 Caddy 컨테이너가 정적 파일을 서빙할 수 있습니다." >&2
   exit 1
-}
+fi
 
-install -m 0644 "$SCRIPT_DIR/cert-renew.service" /etc/systemd/system/cert-renew.service
-install -m 0644 "$SCRIPT_DIR/cert-renew.timer" /etc/systemd/system/cert-renew.timer
+sed "s/YOUR-HOST.tailXXXXX.ts.net/$HOST/g" "$SCRIPT_DIR/Caddyfile" > "$STATE_DIR/Caddyfile"
 
-systemctl daemon-reload
-systemctl enable --now mediamtx
-systemctl enable --now cert-renew.timer
-systemctl restart caddy
-systemctl enable caddy
+(cd "$SCRIPT_DIR" && docker compose up -d)
 
 ###############################################################################
 # 5단계 — 최종 방화벽 잠금 (§5.1-5)
@@ -199,8 +163,8 @@ echo "════════════════════════�
 echo " 배포 완료 — 남은 수동 작업"
 echo "════════════════════════════════════════════════════════════"
 echo " 1) $STATE_DIR/mediamtx.yml 의 CHANGE_ME_* PIN을 실제 값으로 교체 후"
-echo "    sudo systemctl restart mediamtx"
+echo "    (server/ 디렉터리에서) docker compose restart mediamtx"
 echo " 2) 카메라 폰: https://$HOST/camera.html#cam=livingroom&pin=<발행PIN>"
 echo " 3) 뷰어 기기: https://$HOST/#cam=livingroom&pin=<시청PIN>"
-echo " 4) 상태 확인: systemctl status mediamtx caddy"
+echo " 4) 상태 확인: docker compose ps / docker compose logs -f (server/ 디렉터리에서)"
 echo "════════════════════════════════════════════════════════════"

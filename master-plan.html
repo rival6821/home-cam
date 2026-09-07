@@ -722,32 +722,67 @@ tailscale up
 tailscale cert cam-vps.tailXXXXX.ts.net</pre>
         </div>
         <div class="phase">
-          <h3>3. MediaMTX 설치</h3>
-          <p>약 15MB 단일 바이너리. WHIP/WHEP 활성화, 녹화 기능은 명시적으로 끈다.</p>
-          <pre class="code"><span class="c1"># mediamtx.yml 핵심 항목</span>
+          <h3>3. Docker 설치, MediaMTX 컨테이너 준비</h3>
+          <p>MediaMTX·Caddy는 컨테이너로 구동한다. Tailscale은 인증서 발급이 호스트의 tailnet
+          신원에 묶여 있어 호스트에 네이티브로 남긴다(아래 콜아웃 참고). WHIP/WHEP 활성화,
+          녹화 기능은 명시적으로 끈다.</p>
+          <pre class="code">curl -fsSL https://get.docker.com | sh
+
+<span class="c1"># mediamtx.yml 핵심 항목 — 호스트의 /etc/homecam/mediamtx.yml에 두고 컨테이너에 마운트</span>
 webrtc: <span class="k">yes</span>
-webrtcAddress: :8889
+webrtcAddress: :8889   <span class="c1"># 호스트에는 게시하지 않음 — caddy 컨테이너만 내부망으로 접근</span>
 record: <span class="k">no</span>   <span class="c1"># 무저장 원칙 — 디스크 기록 자체를 비활성화</span></pre>
         </div>
         <div class="phase">
           <h3>4. Caddy로 동일 출처 통합</h3>
-          <p>정적 HTML과 MediaMTX 리버스 프록시를 하나의 HTTPS 오리진으로 묶는다.</p>
-          <pre class="code"><span class="c1"># Caddyfile</span>
+          <p>정적 HTML과 MediaMTX 리버스 프록시를 하나의 HTTPS 오리진으로 묶는다. 두 컨테이너는
+          Docker 내부 브리지 네트워크로만 통신하고("mediamtx"는 컨테이너 이름이 아니라 Compose
+          서비스명 — Docker 내장 DNS가 풀어준다), 공인 인터넷에는 아무것도 게시하지 않는다.</p>
+          <pre class="code"><span class="c1"># docker-compose.yml</span>
+services:
+  mediamtx:
+    image: bluenviron/mediamtx:1.17.1
+    volumes: [<span class="mono">/etc/homecam/mediamtx.yml:/mediamtx.yml:ro</span>]
+    networks: [internal]              <span class="c1"># 8889는 호스트에 게시하지 않는다</span>
+  caddy:
+    image: caddy:2.11.4-alpine
+    volumes:
+      - /etc/homecam/Caddyfile:/etc/caddy/Caddyfile:ro
+      - /etc/homecam/certs:/etc/homecam/certs:ro
+    networks: [internal]
+    ports: [<span class="mono">"${TAILSCALE_IP}:443:443"</span>]   <span class="c1"># IP를 못박는다 — 아래 콜아웃</span>
+
+<span class="c1"># Caddyfile</span>
 cam-vps.tailXXXXX.ts.net {
-  tls /var/lib/tailscale/certs/cam-vps.tailXXXXX.ts.net.crt \
-      /var/lib/tailscale/certs/cam-vps.tailXXXXX.ts.net.key
-  handle /*/whip { reverse_proxy localhost:8889 }
-  handle /*/whep { reverse_proxy localhost:8889 }
+  tls /etc/homecam/certs/cam-vps.tailXXXXX.ts.net.crt \
+      /etc/homecam/certs/cam-vps.tailXXXXX.ts.net.key
+  handle /*/whip { reverse_proxy mediamtx:8889 }
+  handle /*/whep { reverse_proxy mediamtx:8889 }
   handle { root * /var/www/homecam
            file_server }
 }</pre>
         </div>
         <div class="phase">
-          <h3>5. 최종 방화벽 잠금 + 자동 기동</h3>
+          <h3>5. 최종 방화벽 잠금 + 컨테이너 기동</h3>
           <pre class="code">ufw allow in on tailscale0
 ufw allow 41641/udp   <span class="c1"># WireGuard 전용 포트만 개방</span>
 ufw enable
-systemctl enable --now mediamtx caddy</pre>
+docker compose up -d   <span class="c1"># mediamtx·caddy 컨테이너 기동 (systemd 서비스 아님)</span></pre>
+        </div>
+
+        <div class="callout callout--warn">
+          <span class="badge">Docker와 방화벽</span>
+          <div>
+            <p><strong>Docker는 <span class="mono">ufw</span>를 우회할 수 있다.</strong> Docker가 게시된
+            포트(<span class="mono">-p</span>/<span class="mono">ports:</span>)마다 자체 iptables 규칙(DOCKER 체인)을
+            심는데, 이 규칙이 ufw의 차단 규칙보다 먼저 매칭된다 — "0.0.0.0으로 연 포트는 ufw가 막아준다"는
+            네이티브 배포의 직관이 컨테이너 앞에서는 성립하지 않는다. 이 설계는 두 겹으로 막는다:
+            ① Caddy의 443을 <span class="mono">"${TAILSCALE_IP}:443:443"</span>처럼 <strong>구체적인 IP에 못박아
+            바인딩</strong>한다 — Tailscale IP로만 바인딩된 소켓은 애초에 공인 인터페이스로 DNAT될 여지가 없다.
+            ② MediaMTX의 WHIP/WHEP(8889)는 호스트에 <strong>전혀 게시하지 않고</strong> 내부 브리지 네트워크로만
+            둔다. 반대로 Tailscale 자체는 호스트에 네이티브로 남겨 이 우회 경로 자체를 만들지 않았다 — 이것이
+            "Tailscale은 컨테이너화하지 않는다"는 결정의 핵심 근거다.</p>
+          </div>
         </div>
 
         <h3><span class="h-num">5.2</span>보안 헤더</h3>
@@ -826,7 +861,7 @@ systemctl enable --now mediamtx caddy</pre>
               <tr><td>프레임 드롭</td><td>홈 업로드 대역폭 포화</td><td>비트레이트 하향(800→500kbps) 임시 적용</td></tr>
               <tr><td>새벽 시간대 반복 끊김</td><td>공유기 야간 회선 재할당</td><td>공유기 DHCP 임대시간 연장, 재접속 로그로 패턴 확인</td></tr>
               <tr><td>발열로 인한 자동 종료</td><td>충전 상한 미설정 또는 밀폐 거치</td><td>§3.1 수칙 재점검, 거치 위치 통풍 개선</td></tr>
-              <tr><td>VPS 응답 없음</td><td>트래픽 한도 초과 또는 프로세스 다운</td><td><span class="mono">systemctl status mediamtx caddy</span>, Oracle 콘솔 사용량 확인</td></tr>
+              <tr><td>VPS 응답 없음</td><td>트래픽 한도 초과 또는 컨테이너 다운</td><td><span class="mono">docker compose ps</span> / <span class="mono">docker compose logs</span>, Oracle 콘솔 사용량 확인</td></tr>
             </tbody>
           </table>
         </div>

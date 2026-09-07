@@ -19,3 +19,7 @@ Thumbs.db
 # CHANGE_ME_* 자리 표시자만 담아야 한다 — 실제 배포판은 VPS의
 # /etc/homecam/mediamtx.yml에 있고 이 저장소 밖이다).
 *.local.yml
+
+# Docker Compose가 Caddy의 443 게시 IP(TAILSCALE_IP)를 읽어오는 파일.
+# VPS마다 다른 값이라 커밋하지 않는다 — setup.sh가 자동 생성한다.
+server/.env

@@ -27,13 +27,19 @@ tailscale cert \
   --key-file="$CERT_DIR/$HOST.key" \
   "$HOST"
 
-# Caddy(caddy 계정으로 구동)가 읽을 수 있도록 소유권 조정.
-# private key는 caddy 그룹만 읽도록 640으로 좁힌다.
-chown root:caddy "$CERT_DIR/$HOST.crt" "$CERT_DIR/$HOST.key"
+# Caddy는 이제 컨테이너(호스트 root와 동일한 UID 0)로 구동되므로 caddy 시스템
+# 계정이 따로 없다 — root 소유로 두고, private key는 600으로 최대한 좁힌다.
+chown root:root "$CERT_DIR/$HOST.crt" "$CERT_DIR/$HOST.key"
 chmod 644 "$CERT_DIR/$HOST.crt"
-chmod 640 "$CERT_DIR/$HOST.key"
+chmod 600 "$CERT_DIR/$HOST.key"
 
-echo "[cert-renew] Caddy에 갱신된 인증서 반영 중..."
-systemctl reload caddy
+# 최초 setup.sh 실행 중(2단계)에는 Caddy 컨테이너가 아직 없으므로 reload를
+# 건너뛴다 — 4단계에서 컨테이너가 최초 기동될 때 이 인증서를 그대로 읽는다.
+if docker ps --format '{{.Names}}' 2>/dev/null | grep -qx 'homecam-caddy'; then
+  echo "[cert-renew] Caddy 컨테이너에 갱신된 인증서 반영 중..."
+  docker exec homecam-caddy caddy reload --config /etc/caddy/Caddyfile --adapter caddyfile
+else
+  echo "[cert-renew] homecam-caddy 컨테이너가 아직 없어 reload를 건너뜁니다(최초 실행)."
+fi
 
 echo "[cert-renew] 완료."
