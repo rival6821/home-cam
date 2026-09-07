@@ -181,7 +181,7 @@
     audio: { echoCancellation:true, noiseSuppression:true, channelCount:1 }
   };
   const VIDEO_MAX_BITRATE = 800_000;       // §1.4 트래픽 산정의 기준값(800kbps)
-  const H264_PROFILE_RE   = /profile-level-id=42e01f/i; // §2.1 Constrained Baseline
+  const H264_BASELINE_RE  = /profile-level-id=42e0/i;    // §2.1 Constrained Baseline(레벨 무관)
   const ICE_SERVERS = [{ urls: 'stun:stun.l.google.com:19302' }]; // Tailscale 평면망이라 필수는 아니나 보험용
   const ICE_GATHER_TIMEOUT = 4000;         // 완전 수집을 못해도 4초 후 진행(모바일망 지연 대비)
   const RECONNECT_BASE = 1000, RECONNECT_FACTOR = 1.8, RECONNECT_MAX = 30000, RECONNECT_JITTER = 0.2; // §3.3
@@ -244,14 +244,29 @@
   }
 
   // ───────────────────────── §2.1 H.264 강제 + 비트레이트 ─────────────────────────
+  // MediaMTX는 트랜스코딩을 하지 않으므로 여기서 고른 코덱이 곧 시청 측(iOS 포함)이
+  // 받게 될 코덱이다. 그래서 실패 시 "기본 협상에 맡기고 조용히 넘어가는" 대신
+  // 3단계로 최대한 H.264를 붙잡는다 — VP8로 떨어지면 iOS Safari 재생이 기기별로
+  // 안 되는 사례가 실측됐다(검은 화면, 오디오는 정상). 그래도 정 안 되면(H.264
+  // 인코더 자체가 없는 기기) 기본 협상(대개 VP8)에 맡긴다 — 그게 최선이다.
   function preferH264(peerConn, videoTrack){
     try {
       const transceiver = peerConn.getTransceivers().find(t => t.sender && t.sender.track === videoTrack);
       const caps = window.RTCRtpSender && RTCRtpSender.getCapabilities && RTCRtpSender.getCapabilities('video');
       if (!transceiver || !caps) return false;
-      const h264 = caps.codecs.filter(c => c.mimeType.toLowerCase() === 'video/h264' && H264_PROFILE_RE.test(c.sdpFmtpLine || ''));
-      if (h264.length === 0) return false; // 기기가 이 프로파일 인코딩을 못하면 기본 협상에 위임
+      const allH264 = caps.codecs.filter(c => c.mimeType.toLowerCase() === 'video/h264');
+      let h264 = allH264.filter(c => H264_BASELINE_RE.test(c.sdpFmtpLine || ''));
+      if (h264.length === 0 && allH264.length > 0) {
+        console.warn('[homecam] Constrained Baseline(42e0xx) 미지원 — 다른 H.264 프로파일로 대체:',
+          allH264.map(c => c.sdpFmtpLine));
+        h264 = allH264; // 이 기기가 지원하는 다른 H.264 프로파일이라도 VP8보다는 안전하다
+      }
+      if (h264.length === 0) {
+        console.warn('[homecam] 이 기기는 H.264 인코딩을 지원하지 않습니다 — VP8로 진행(iOS 뷰어 호환성 낮을 수 있음)');
+        return false;
+      }
       transceiver.setCodecPreferences(h264);
+      console.info('[homecam] 송출 코덱: H.264', h264[0].sdpFmtpLine || '');
       return true;
     } catch (e) { console.warn('[homecam] H.264 강제 실패 — 기본 코덱 협상 사용', e); return false; }
   }
