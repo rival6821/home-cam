@@ -127,7 +127,6 @@
         <select id="qualitySelect">
           <option value="low">저전력 (480p·15fps) — 발열·트래픽 최소</option>
           <option value="medium" selected>표준 (720p·24fps) — 기본값</option>
-          <option value="high">고화질 (1080p·24fps) — 구형 기기엔 부담될 수 있음</option>
         </select>
 
         <div class="err" id="setupErr"></div>
@@ -190,7 +189,6 @@
   const QUALITY_PRESETS = {
     low:    { width:854,  height:480,  frameRate:15, bitrate:400_000 },
     medium: { width:1280, height:720,  frameRate:24, bitrate:800_000 },
-    high:   { width:1920, height:1080, frameRate:24, bitrate:1_500_000 },
   };
   const DEFAULT_QUALITY = 'medium';
   function mediaConstraintsFor(quality){
