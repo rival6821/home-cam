@@ -44,11 +44,11 @@
   h1{ font-size:22px; margin:0 0 4px; }
   .lede{ color:var(--ink-soft); font-size:14px; margin:0 0 26px; line-height:1.6; }
   label{ display:block; font-size:13px; color:var(--ink-soft); margin:18px 0 6px; }
-  input[type=text], input[type=password]{
+  input[type=text], input[type=password], select{
     width:100%; background:var(--surface); border:1px solid var(--line); color:var(--ink);
     font-family:var(--font-mono); font-size:16px; padding:12px 14px; border-radius:6px; outline:none;
   }
-  input:focus{ border-color:var(--live); }
+  input:focus, select:focus{ border-color:var(--live); }
   .hint{ font-size:12px; color:var(--muted); margin-top:6px; }
   .err{ font-size:12px; color:var(--danger); margin-top:6px; min-height:14px; }
   button{
@@ -123,6 +123,13 @@
         <label for="pinInput">게시 PIN</label>
         <input id="pinInput" type="password" inputmode="latin" autocapitalize="off" autocorrect="off" placeholder="영문/숫자 10자리 권장" maxlength="32">
 
+        <label for="qualitySelect">화질</label>
+        <select id="qualitySelect">
+          <option value="low">저전력 (480p·15fps) — 발열·트래픽 최소</option>
+          <option value="medium" selected>표준 (720p·24fps) — 기본값</option>
+          <option value="high">고화질 (1080p·24fps) — 구형 기기엔 부담될 수 있음</option>
+        </select>
+
         <div class="err" id="setupErr"></div>
         <button type="submit" class="btn-primary">카메라 시작</button>
       </form>
@@ -162,6 +169,7 @@
     <div class="sheet">
       <h2>카메라 제어</h2>
       <div class="kv"><span>경로</span><span id="panelPath">–</span></div>
+      <div class="kv"><span>화질</span><span id="panelQuality">–</span></div>
       <div class="kv"><span>상태</span><span id="panelStatus">–</span></div>
       <div class="kv"><span>재연결 시도</span><span id="panelAttempts">0</span></div>
       <div class="kv"><span>배터리</span><span id="panelBattery">지원 안 됨</span></div>
@@ -176,11 +184,22 @@
   'use strict';
 
   // ───────────────────────── §1/§2 상수 — 마스터플랜과 동일한 값 ─────────────────────────
-  const MEDIA_CONSTRAINTS = {
-    video: { width:{ideal:1280}, height:{ideal:720}, frameRate:{ideal:24,max:24}, facingMode:{ideal:'environment'} },
-    audio: { echoCancellation:true, noiseSuppression:true, channelCount:1 }
+  // 화질 프리셋 — §1.4 트래픽 산정의 기준값(720p·800kbps)을 "표준"으로 두고,
+  // 발열·트래픽을 줄이려는 기기는 "저전력"을, 여유 있는 기기·회선은 "고화질"을
+  // 고를 수 있게 한다. medium이 지금까지의 유일한 고정값이었다.
+  const QUALITY_PRESETS = {
+    low:    { width:854,  height:480,  frameRate:15, bitrate:400_000 },
+    medium: { width:1280, height:720,  frameRate:24, bitrate:800_000 },
+    high:   { width:1920, height:1080, frameRate:24, bitrate:1_500_000 },
   };
-  const VIDEO_MAX_BITRATE = 800_000;       // §1.4 트래픽 산정의 기준값(800kbps)
+  const DEFAULT_QUALITY = 'medium';
+  function mediaConstraintsFor(quality){
+    const p = QUALITY_PRESETS[quality] || QUALITY_PRESETS[DEFAULT_QUALITY];
+    return {
+      video: { width:{ideal:p.width}, height:{ideal:p.height}, frameRate:{ideal:p.frameRate,max:p.frameRate}, facingMode:{ideal:'environment'} },
+      audio: { echoCancellation:true, noiseSuppression:true, channelCount:1 }
+    };
+  }
   const H264_BASELINE_RE  = /profile-level-id=42e0/i;    // §2.1 Constrained Baseline(레벨 무관)
   const ICE_SERVERS = [{ urls: 'stun:stun.l.google.com:19302' }]; // Tailscale 평면망이라 필수는 아니나 보험용
   const ICE_GATHER_TIMEOUT = 4000;         // 완전 수집을 못해도 4초 후 진행(모바일망 지연 대비)
@@ -210,7 +229,7 @@
   const peekEl = document.getElementById('peek');
 
   // ───────────────────────── 상태 ─────────────────────────
-  let config = { path:'', pin:'' };
+  let config = { path:'', pin:'', quality:DEFAULT_QUALITY };
   let localStream = null, pc = null, sessionUrl = null;
   let reconnectAttempt = 0, reconnecting = false, reconnectTimer = null;
   let watchdogTimer = null, lastFrameCount = 0, stallCount = 0;
@@ -232,15 +251,26 @@
   // ───────────────────────── §4.2 설정 저장/로드 ─────────────────────────
   function loadConfig(){
     const hash = new URLSearchParams(location.hash.slice(1));
-    let storedPath = '', storedPin = '';
-    try { storedPath = localStorage.getItem('homecam.cam.path') || ''; storedPin = localStorage.getItem('homecam.cam.pin') || ''; }
-    catch (e) { /* 프라이빗 브라우징 등으로 저장소 접근 불가 — 해시 값만으로 계속 진행 */ }
-    return { path: hash.get('cam') || storedPath, pin: hash.get('pin') || storedPin };
+    let storedPath = '', storedPin = '', storedQuality = '';
+    try {
+      storedPath = localStorage.getItem('homecam.cam.path') || '';
+      storedPin = localStorage.getItem('homecam.cam.pin') || '';
+      storedQuality = localStorage.getItem('homecam.cam.quality') || '';
+    } catch (e) { /* 프라이빗 브라우징 등으로 저장소 접근 불가 — 해시 값만으로 계속 진행 */ }
+    const quality = hash.get('q') || storedQuality;
+    return {
+      path: hash.get('cam') || storedPath,
+      pin: hash.get('pin') || storedPin,
+      quality: QUALITY_PRESETS[quality] ? quality : DEFAULT_QUALITY, // 화이트리스트 — 모르는 값은 표준으로
+    };
   }
-  function saveConfig(path, pin){
-    try { localStorage.setItem('homecam.cam.path', path); localStorage.setItem('homecam.cam.pin', pin); }
-    catch (e) { console.warn('[homecam] 로컬 저장 실패 — 이번 세션에서만 유지됩니다', e); }
-    history.replaceState(null, '', `#cam=${encodeURIComponent(path)}&pin=${encodeURIComponent(pin)}`);
+  function saveConfig(path, pin, quality){
+    try {
+      localStorage.setItem('homecam.cam.path', path);
+      localStorage.setItem('homecam.cam.pin', pin);
+      localStorage.setItem('homecam.cam.quality', quality);
+    } catch (e) { console.warn('[homecam] 로컬 저장 실패 — 이번 세션에서만 유지됩니다', e); }
+    history.replaceState(null, '', `#cam=${encodeURIComponent(path)}&pin=${encodeURIComponent(pin)}&q=${encodeURIComponent(quality)}`);
   }
 
   // ───────────────────────── §2.1 H.264 강제 + 비트레이트 ─────────────────────────
@@ -368,7 +398,7 @@
   }
   async function reacquireCameraTrack(){
     try {
-      const newStream = await navigator.mediaDevices.getUserMedia(MEDIA_CONSTRAINTS);
+      const newStream = await navigator.mediaDevices.getUserMedia(mediaConstraintsFor(config.quality));
       const newVideoTrack = newStream.getVideoTracks()[0];
       const sender = pc && pc.getSenders().find(s => s.track && s.track.kind === 'video');
       if (sender) await sender.replaceTrack(newVideoTrack);
@@ -438,6 +468,8 @@
 
   function openPanel(){
     document.getElementById('panelPath').textContent = config.path || '–';
+    const p = QUALITY_PRESETS[config.quality] || QUALITY_PRESETS[DEFAULT_QUALITY];
+    document.getElementById('panelQuality').textContent = `${p.height}p·${p.frameRate}fps·${Math.round(p.bitrate/1000)}kbps`;
     showScreen('panel');
   }
   document.getElementById('closePanelBtn').addEventListener('click', () => {
@@ -448,9 +480,13 @@
     showScreen('preview');
   });
   document.getElementById('resetBtn').addEventListener('click', () => {
-    if (!confirm('경로와 PIN을 초기화하고 설정 화면으로 돌아갈까요? 송출이 중단됩니다.')) return;
+    if (!confirm('경로·PIN·화질 설정을 초기화하고 설정 화면으로 돌아갈까요? 송출이 중단됩니다.')) return;
     cleanupConnection();
-    try { localStorage.removeItem('homecam.cam.path'); localStorage.removeItem('homecam.cam.pin'); } catch (e) {}
+    try {
+      localStorage.removeItem('homecam.cam.path');
+      localStorage.removeItem('homecam.cam.pin');
+      localStorage.removeItem('homecam.cam.quality');
+    } catch (e) {}
     history.replaceState(null, '', location.pathname);
     location.reload();
   });
@@ -471,14 +507,15 @@
     e.preventDefault();
     const path = document.getElementById('pathInput').value.trim();
     const pin = document.getElementById('pinInput').value.trim();
+    const quality = document.getElementById('qualitySelect').value;
     const errEl = document.getElementById('setupErr');
     if (!PATH_PIN_RE.test(path) || !PATH_PIN_RE.test(pin)) {
       errEl.textContent = '영문 소문자·숫자·- _ 만 사용할 수 있습니다(1~32자).';
       return;
     }
     errEl.textContent = '';
-    saveConfig(path, pin);
-    config = { path, pin };
+    saveConfig(path, pin, quality);
+    config = { path, pin, quality };
     pathLabel.textContent = path;
     startPublishing();
   });
@@ -488,7 +525,7 @@
     showScreen('preview');
     setStatus('connecting', '카메라 준비 중…');
     try {
-      localStream = await navigator.mediaDevices.getUserMedia(MEDIA_CONSTRAINTS);
+      localStream = await navigator.mediaDevices.getUserMedia(mediaConstraintsFor(config.quality));
     } catch (e) {
       setStatus('error', '카메라/마이크 권한이 필요합니다');
       return;
@@ -498,7 +535,8 @@
     pc = new RTCPeerConnection({ iceServers: ICE_SERVERS });
     localStream.getTracks().forEach(track => pc.addTrack(track, localStream));
     preferH264(pc, localStream.getVideoTracks()[0]);
-    await applyVideoBitrate(pc, VIDEO_MAX_BITRATE);
+    const preset = QUALITY_PRESETS[config.quality] || QUALITY_PRESETS[DEFAULT_QUALITY];
+    await applyVideoBitrate(pc, preset.bitrate);
     pc.addEventListener('connectionstatechange', onConnectionStateChange);
 
     try {
@@ -520,6 +558,7 @@
   acquireWakeLock();
 
   config = loadConfig();
+  document.getElementById('qualitySelect').value = config.quality; // loadConfig가 이미 화이트리스트 검증함
   if (PATH_PIN_RE.test(config.path) && PATH_PIN_RE.test(config.pin)) {
     document.getElementById('pathInput').value = config.path;
     document.getElementById('pinInput').value = config.pin;
