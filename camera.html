@@ -125,8 +125,8 @@
 
         <label for="qualitySelect">화질</label>
         <select id="qualitySelect">
-          <option value="low">저전력 (480p·15fps) — 발열·트래픽 최소</option>
-          <option value="medium" selected>표준 (720p·24fps) — 기본값</option>
+          <option value="low" selected>저전력 (480p·15fps) — 기본값, 발열·트래픽 최소</option>
+          <option value="medium">표준 (720p·24fps)</option>
         </select>
 
         <div class="err" id="setupErr"></div>
@@ -190,7 +190,7 @@
     low:    { width:854,  height:480,  frameRate:15, bitrate:400_000 },
     medium: { width:1280, height:720,  frameRate:24, bitrate:800_000 },
   };
-  const DEFAULT_QUALITY = 'medium';
+  const DEFAULT_QUALITY = 'low'; // 발열·트래픽을 기본으로 아낀다 — 필요하면 설정에서 "표준"으로 올리면 됨
   function mediaConstraintsFor(quality){
     const p = QUALITY_PRESETS[quality] || QUALITY_PRESETS[DEFAULT_QUALITY];
     return {
@@ -259,7 +259,7 @@
     return {
       path: hash.get('cam') || storedPath,
       pin: hash.get('pin') || storedPin,
-      quality: QUALITY_PRESETS[quality] ? quality : DEFAULT_QUALITY, // 화이트리스트 — 모르는 값은 표준으로
+      quality: QUALITY_PRESETS[quality] ? quality : DEFAULT_QUALITY, // 화이트리스트 — 모르는 값은 기본값으로
     };
   }
   function saveConfig(path, pin, quality){
