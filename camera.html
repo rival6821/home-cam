@@ -51,6 +51,21 @@
   input:focus, select:focus{ border-color:var(--live); }
   .hint{ font-size:12px; color:var(--muted); margin-top:6px; }
   .err{ font-size:12px; color:var(--danger); margin-top:6px; min-height:14px; }
+  /* ── PIN 표시 토글 ──
+     입력칸 안쪽 오른쪽에 겹쳐 놓는다. 아이콘은 인라인 SVG다 — 외부 요청 없이
+     동작해야 하는 단일 파일 원칙(위 주석 참고)에 따라 아이콘 폰트를 쓰지 않는다. */
+  .pin-field{ position:relative; }
+  .pin-field input{ padding-right:46px; }
+  .pin-reveal{
+    position:absolute; top:0; right:0; width:46px; height:100%; padding:0;
+    display:flex; align-items:center; justify-content:center;
+    background:none; border:none; border-radius:0 6px 6px 0; color:var(--ink-soft);
+  }
+  .pin-reveal:active{ color:var(--ink); }
+  .pin-reveal svg{ width:20px; height:20px; display:block; }
+  .pin-reveal .eye-off{ display:none; }
+  .pin-reveal.revealed .eye{ display:none; }
+  .pin-reveal.revealed .eye-off{ display:block; }
   button{
     font-family:var(--font); font-size:15px; font-weight:600; border:none; border-radius:8px;
     padding:14px 18px; cursor:pointer; width:100%;
@@ -122,7 +137,21 @@
         <input id="pathInput" type="text" inputmode="latin" autocapitalize="off" autocorrect="off" placeholder="livingroom" maxlength="32">
 
         <label for="pinInput">게시 PIN</label>
-        <input id="pinInput" type="password" inputmode="latin" autocapitalize="off" autocorrect="off" placeholder="영문/숫자 10자리 권장" maxlength="32">
+        <div class="pin-field">
+          <input id="pinInput" type="password" inputmode="latin" autocapitalize="off" autocorrect="off" placeholder="영문/숫자 10자리 권장" maxlength="32">
+          <button type="button" class="pin-reveal" id="pinReveal" aria-label="PIN 표시" aria-pressed="false" aria-controls="pinInput">
+          <svg class="eye" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M1.8 12S5.4 5.2 12 5.2 22.2 12 22.2 12 18.6 18.8 12 18.8 1.8 12 1.8 12Z"/>
+            <circle cx="12" cy="12" r="3.2"/>
+          </svg>
+          <svg class="eye-off" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M9.9 5.5A9.7 9.7 0 0 1 12 5.2c6.6 0 10.2 6.8 10.2 6.8a18.3 18.3 0 0 1-2.9 3.9"/>
+            <path d="M6.5 6.7A17.9 17.9 0 0 0 1.8 12S5.4 18.8 12 18.8c1.9 0 3.6-.6 5-1.4"/>
+            <path d="M10.1 10.1a2.7 2.7 0 0 0 3.8 3.8"/>
+            <path d="M3 3l18 18"/>
+          </svg>
+          </button>
+        </div>
 
         <label for="facingSelect">카메라</label>
         <select id="facingSelect">
@@ -585,6 +614,44 @@
     document.getElementById('resetBtn').click();
   });
 
+  // ───────────────────────── PIN 표시 토글 ─────────────────────────
+  // 화면에 점으로만 보이면 오타를 눈으로 확인할 수 없어 "PIN 오류"의 원인이
+  // 오타인지 서버 설정인지 구분이 안 된다. 기본은 가림이고, 폼을 떠날 때는
+  // 자동으로 다시 가려 어깨너머로 노출되는 시간을 입력 중으로만 한정한다.
+  const pinInput = document.getElementById('pinInput');
+  const pinRevealBtn = document.getElementById('pinReveal');
+  function setPinRevealed(on){
+    if (on === (pinInput.type === 'text')) return;
+    const focused = document.activeElement === pinInput;
+    let start = null, end = null;
+    try { start = pinInput.selectionStart; end = pinInput.selectionEnd; } catch (e) { /* 일부 브라우저는 password에서 접근 불가 */ }
+    pinInput.type = on ? 'text' : 'password';
+    pinRevealBtn.classList.toggle('revealed', on);
+    pinRevealBtn.setAttribute('aria-pressed', String(on));
+    pinRevealBtn.setAttribute('aria-label', on ? 'PIN 가리기' : 'PIN 표시');
+    // type을 바꾸면 캐럿이 밀리고 포커스가 빠지는 브라우저가 있다 — 되돌린다.
+    // 동기 복원만으로는 부족하다: 클릭 처리가 끝난 뒤 선택 영역을 0으로 되돌리는
+    // 브라우저가 있어(Chromium 실측) 다음 틱에 한 번 더 적용한다. 그 사이 사용자가
+    // 다른 곳을 눌렀다면 포커스를 도로 빼앗지 않도록 그때는 건너뛴다.
+    if (!focused || start === null) return;
+    pinInput.focus();
+    const restoreCaret = () => { try { pinInput.setSelectionRange(start, end); } catch (e) {} };
+    restoreCaret();
+    // 동기 복원만으로는 유지되지 않는다 — 클릭 처리가 끝난 뒤 선택 영역을 0으로
+    // 되돌리는 브라우저가 있다(Chromium 실측: type을 어떻게 바꿔 써도 동일).
+    // 그래서 다음 틱에 한 번 더 적용하되, 그 사이 사용자가 이미 타이핑했거나
+    // 다른 곳으로 옮겨갔다면 끼어들지 않는다 — 끼어들면 캐럿이 입력 도중에
+    // 튀어 오히려 글자가 엉킨다.
+    const valueAtToggle = pinInput.value;
+    setTimeout(() => {
+      if (document.activeElement === pinInput && pinInput.value === valueAtToggle) restoreCaret();
+    }, 0);
+  }
+  // 버튼이 포커스를 가져가면 모바일에서 키보드가 닫히고 캐럿 위치가 날아간다.
+  // mousedown 기본 동작(포커스 이동)을 막아 입력 중에도 커서가 그대로 남게 한다.
+  pinRevealBtn.addEventListener('mousedown', e => e.preventDefault());
+  pinRevealBtn.addEventListener('click', () => setPinRevealed(pinInput.type === 'password'));
+
   // ───────────────────────── 설정 폼 ─────────────────────────
   document.getElementById('setupForm').addEventListener('submit', (e) => {
     e.preventDefault();
@@ -598,6 +665,7 @@
       return;
     }
     errEl.textContent = '';
+    setPinRevealed(false); // 송출이 시작되면 더 볼 이유가 없다
     saveConfig(path, pin, quality, facing);
     config = { path, pin, quality, facing };
     pathLabel.textContent = path;
