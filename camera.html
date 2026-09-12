@@ -59,6 +59,7 @@
   .btn-primary:active{ opacity:.85; }
   .btn-ghost{ background:var(--surface-2); color:var(--ink); border:1px solid var(--line); }
   .btn-danger-ghost{ background:transparent; color:var(--danger); border:1px solid color-mix(in srgb, var(--danger) 40%, var(--line)); }
+  button:disabled{ opacity:.5; cursor:default; }
 
   /* ── 프리뷰(설치) 화면 ── */
   #previewScreen{ flex-direction:column; background:#000; }
@@ -123,6 +124,12 @@
         <label for="pinInput">게시 PIN</label>
         <input id="pinInput" type="password" inputmode="latin" autocapitalize="off" autocorrect="off" placeholder="영문/숫자 10자리 권장" maxlength="32">
 
+        <label for="facingSelect">카메라</label>
+        <select id="facingSelect">
+          <option value="environment" selected>후면 카메라 — 기본값, 화각·화질이 넓고 좋음</option>
+          <option value="user">전면 카메라 — 화면을 끈 채 세워두기 좋음</option>
+        </select>
+
         <label for="qualitySelect">화질</label>
         <select id="qualitySelect">
           <option value="low" selected>저전력 (480p·15fps) — 기본값, 발열·트래픽 최소</option>
@@ -168,10 +175,12 @@
     <div class="sheet">
       <h2>카메라 제어</h2>
       <div class="kv"><span>경로</span><span id="panelPath">–</span></div>
+      <div class="kv"><span>카메라</span><span id="panelFacing">–</span></div>
       <div class="kv"><span>화질</span><span id="panelQuality">–</span></div>
       <div class="kv"><span>상태</span><span id="panelStatus">–</span></div>
       <div class="kv"><span>재연결 시도</span><span id="panelAttempts">0</span></div>
       <div class="kv"><span>배터리</span><span id="panelBattery">지원 안 됨</span></div>
+      <button class="btn-ghost" id="switchCameraBtn">카메라 전환</button>
       <button class="btn-ghost" id="wakeScreenBtn">화면 켜기(프리뷰로 복귀)</button>
       <button class="btn-danger-ghost" id="resetBtn">경로·PIN 초기화</button>
       <button class="btn-ghost" id="closePanelBtn">닫기</button>
@@ -191,12 +200,36 @@
     medium: { width:1280, height:720,  frameRate:24, bitrate:800_000 },
   };
   const DEFAULT_QUALITY = 'low'; // 발열·트래픽을 기본으로 아낀다 — 필요하면 설정에서 "표준"으로 올리면 됨
-  function mediaConstraintsFor(quality){
+  // 전면/후면 선택 — 거치 방향에 따라 달라진다. 후면이 기본(화각·화질이 낫다)이지만,
+  // 화면을 벽 쪽으로 두고 세워두는 설치에서는 전면이 더 편해서 고를 수 있게 한다.
+  const CAMERA_FACINGS = {
+    environment: { label:'후면 카메라' },
+    user:        { label:'전면 카메라' },
+  };
+  const DEFAULT_FACING = 'environment';
+  const AUDIO_CONSTRAINTS = { echoCancellation:true, noiseSuppression:true, channelCount:1 };
+  function facingLabel(facing){ return (CAMERA_FACINGS[facing] || CAMERA_FACINGS[DEFAULT_FACING]).label; }
+  function otherFacing(facing){ return facing === 'user' ? 'environment' : 'user'; }
+  function videoConstraintsFor(quality, facing, exact){
     const p = QUALITY_PRESETS[quality] || QUALITY_PRESETS[DEFAULT_QUALITY];
+    const f = CAMERA_FACINGS[facing] ? facing : DEFAULT_FACING;
     return {
-      video: { width:{ideal:p.width}, height:{ideal:p.height}, frameRate:{ideal:p.frameRate,max:p.frameRate}, facingMode:{ideal:'environment'} },
-      audio: { echoCancellation:true, noiseSuppression:true, channelCount:1 }
+      width:{ideal:p.width}, height:{ideal:p.height}, frameRate:{ideal:p.frameRate,max:p.frameRate},
+      facingMode: exact ? {exact:f} : {ideal:f},
     };
+  }
+  // facingMode는 exact로 먼저 요청한다 — ideal은 "맞는 카메라가 없으면 아무거나"라는 뜻이라
+  // 사용자가 고른 쪽과 다른 카메라가 조용히 잡힐 수 있다. 해당 카메라가 아예 없는 기기에서만
+  // OverconstrainedError가 나므로, 그때는 ideal로 물러서서 촬영 자체는 계속되게 한다.
+  async function getCameraStream(quality, facing, opts){
+    const audio = (opts && opts.audio === false) ? false : AUDIO_CONSTRAINTS;
+    try {
+      return await navigator.mediaDevices.getUserMedia({ video: videoConstraintsFor(quality, facing, true), audio });
+    } catch (e) {
+      if (!e || (e.name !== 'OverconstrainedError' && e.name !== 'ConstraintNotSatisfiedError')) throw e;
+      console.warn(`[homecam] ${facingLabel(facing)}를 지정해 잡지 못했습니다 — 기기가 가진 카메라로 대체`, e);
+      return await navigator.mediaDevices.getUserMedia({ video: videoConstraintsFor(quality, facing, false), audio });
+    }
   }
   const H264_BASELINE_RE  = /profile-level-id=42e0/i;    // §2.1 Constrained Baseline(레벨 무관)
   const ICE_SERVERS = [{ urls: 'stun:stun.l.google.com:19302' }]; // Tailscale 평면망이라 필수는 아니나 보험용
@@ -227,7 +260,7 @@
   const peekEl = document.getElementById('peek');
 
   // ───────────────────────── 상태 ─────────────────────────
-  let config = { path:'', pin:'', quality:DEFAULT_QUALITY };
+  let config = { path:'', pin:'', quality:DEFAULT_QUALITY, facing:DEFAULT_FACING };
   let localStream = null, pc = null, sessionUrl = null;
   let reconnectAttempt = 0, reconnecting = false, reconnectTimer = null;
   let watchdogTimer = null, lastFrameCount = 0, stallCount = 0;
@@ -249,26 +282,30 @@
   // ───────────────────────── §4.2 설정 저장/로드 ─────────────────────────
   function loadConfig(){
     const hash = new URLSearchParams(location.hash.slice(1));
-    let storedPath = '', storedPin = '', storedQuality = '';
+    let storedPath = '', storedPin = '', storedQuality = '', storedFacing = '';
     try {
       storedPath = localStorage.getItem('homecam.cam.path') || '';
       storedPin = localStorage.getItem('homecam.cam.pin') || '';
       storedQuality = localStorage.getItem('homecam.cam.quality') || '';
+      storedFacing = localStorage.getItem('homecam.cam.facing') || '';
     } catch (e) { /* 프라이빗 브라우징 등으로 저장소 접근 불가 — 해시 값만으로 계속 진행 */ }
     const quality = hash.get('q') || storedQuality;
+    const facing = hash.get('f') || storedFacing;
     return {
       path: hash.get('cam') || storedPath,
       pin: hash.get('pin') || storedPin,
       quality: QUALITY_PRESETS[quality] ? quality : DEFAULT_QUALITY, // 화이트리스트 — 모르는 값은 기본값으로
+      facing: CAMERA_FACINGS[facing] ? facing : DEFAULT_FACING,
     };
   }
-  function saveConfig(path, pin, quality){
+  function saveConfig(path, pin, quality, facing){
     try {
       localStorage.setItem('homecam.cam.path', path);
       localStorage.setItem('homecam.cam.pin', pin);
       localStorage.setItem('homecam.cam.quality', quality);
+      localStorage.setItem('homecam.cam.facing', facing);
     } catch (e) { console.warn('[homecam] 로컬 저장 실패 — 이번 세션에서만 유지됩니다', e); }
-    history.replaceState(null, '', `#cam=${encodeURIComponent(path)}&pin=${encodeURIComponent(pin)}&q=${encodeURIComponent(quality)}`);
+    history.replaceState(null, '', `#cam=${encodeURIComponent(path)}&pin=${encodeURIComponent(pin)}&q=${encodeURIComponent(quality)}&f=${encodeURIComponent(facing)}`);
   }
 
   // ───────────────────────── §2.1 H.264 강제 + 비트레이트 ─────────────────────────
@@ -396,7 +433,7 @@
   }
   async function reacquireCameraTrack(){
     try {
-      const newStream = await navigator.mediaDevices.getUserMedia(mediaConstraintsFor(config.quality));
+      const newStream = await getCameraStream(config.quality, config.facing);
       const newVideoTrack = newStream.getVideoTracks()[0];
       const sender = pc && pc.getSenders().find(s => s.track && s.track.kind === 'video');
       if (sender) await sender.replaceTrack(newVideoTrack);
@@ -405,6 +442,52 @@
       localStream = newStream;
     } catch (e) { console.warn('[homecam] 트랙 재획득 실패', e); }
   }
+
+  // ───────────────────────── 전면/후면 전환 ─────────────────────────
+  // 재협상 없이 sender.replaceTrack으로만 바꾼다 — WHIP 세션과 마이크는 그대로 두므로
+  // 시청 측에서는 끊김 없이 화면만 바뀐다. 실패해도 기존 트랙이 살아 있어 송출은 계속된다.
+  async function switchCamera(){
+    const next = otherFacing(config.facing);
+    const btn = document.getElementById('switchCameraBtn');
+    btn.disabled = true;
+    btn.textContent = '카메라 전환 중…';
+    let newVideoTrack = null;
+    try {
+      const newStream = await getCameraStream(config.quality, next, { audio:false });
+      newVideoTrack = newStream.getVideoTracks()[0];
+      const sender = pc && pc.getSenders().find(s => s.track && s.track.kind === 'video');
+      if (sender) await sender.replaceTrack(newVideoTrack);
+      if (localStream) {
+        localStream.getVideoTracks().forEach(t => { localStream.removeTrack(t); t.stop(); });
+        localStream.addTrack(newVideoTrack);
+      } else {
+        localStream = newStream;
+      }
+      previewVideo.srcObject = localStream; // 트랙만 갈아끼우면 프리뷰가 멈춘 채 남는 브라우저가 있다
+      config.facing = next;
+      saveConfig(config.path, config.pin, config.quality, config.facing);
+      document.getElementById('facingSelect').value = config.facing;
+      lastFrameCount = 0; stallCount = 0; // 새 트랙의 프레임 수로 워치독을 다시 센다
+    } catch (e) {
+      console.warn('[homecam] 카메라 전환 실패', e);
+      if (newVideoTrack) newVideoTrack.stop();
+      alert(`${facingLabel(next)}로 전환하지 못했습니다. 이 기기에 해당 카메라가 없거나 다른 앱이 쓰고 있을 수 있습니다.`);
+    } finally {
+      renderFacingUi();
+      btn.disabled = false;
+    }
+  }
+  // 패널의 "카메라" 행과 전환 버튼 문구를 현재 상태에 맞춘다. 실제로 잡힌 카메라가
+  // 요청과 다르면(기기가 한쪽밖에 없는 경우) 그 사실도 함께 보여준다 — 설치 진단용.
+  function renderFacingUi(){
+    const actual = localStream && localStream.getVideoTracks()[0] &&
+      (localStream.getVideoTracks()[0].getSettings ? localStream.getVideoTracks()[0].getSettings().facingMode : '');
+    const mismatch = actual && CAMERA_FACINGS[actual] && actual !== config.facing;
+    document.getElementById('panelFacing').textContent =
+      facingLabel(config.facing) + (mismatch ? ` (실제: ${facingLabel(actual)})` : '');
+    document.getElementById('switchCameraBtn').textContent = `${facingLabel(otherFacing(config.facing))}로 전환`;
+  }
+  document.getElementById('switchCameraBtn').addEventListener('click', switchCamera);
 
   // ───────────────────────── §3.3 Screen Wake Lock ─────────────────────────
   async function acquireWakeLock(){
@@ -468,6 +551,7 @@
     document.getElementById('panelPath').textContent = config.path || '–';
     const p = QUALITY_PRESETS[config.quality] || QUALITY_PRESETS[DEFAULT_QUALITY];
     document.getElementById('panelQuality').textContent = `${p.height}p·${p.frameRate}fps·${Math.round(p.bitrate/1000)}kbps`;
+    renderFacingUi();
     showScreen('panel');
   }
   document.getElementById('closePanelBtn').addEventListener('click', () => {
@@ -478,12 +562,13 @@
     showScreen('preview');
   });
   document.getElementById('resetBtn').addEventListener('click', () => {
-    if (!confirm('경로·PIN·화질 설정을 초기화하고 설정 화면으로 돌아갈까요? 송출이 중단됩니다.')) return;
+    if (!confirm('경로·PIN·카메라·화질 설정을 초기화하고 설정 화면으로 돌아갈까요? 송출이 중단됩니다.')) return;
     cleanupConnection();
     try {
       localStorage.removeItem('homecam.cam.path');
       localStorage.removeItem('homecam.cam.pin');
       localStorage.removeItem('homecam.cam.quality');
+      localStorage.removeItem('homecam.cam.facing');
     } catch (e) {}
     history.replaceState(null, '', location.pathname);
     location.reload();
@@ -506,14 +591,15 @@
     const path = document.getElementById('pathInput').value.trim();
     const pin = document.getElementById('pinInput').value.trim();
     const quality = document.getElementById('qualitySelect').value;
+    const facing = document.getElementById('facingSelect').value;
     const errEl = document.getElementById('setupErr');
     if (!PATH_PIN_RE.test(path) || !PATH_PIN_RE.test(pin)) {
       errEl.textContent = '영문 소문자·숫자·- _ 만 사용할 수 있습니다(1~32자).';
       return;
     }
     errEl.textContent = '';
-    saveConfig(path, pin, quality);
-    config = { path, pin, quality };
+    saveConfig(path, pin, quality, facing);
+    config = { path, pin, quality, facing };
     pathLabel.textContent = path;
     startPublishing();
   });
@@ -523,7 +609,7 @@
     showScreen('preview');
     setStatus('connecting', '카메라 준비 중…');
     try {
-      localStream = await navigator.mediaDevices.getUserMedia(mediaConstraintsFor(config.quality));
+      localStream = await getCameraStream(config.quality, config.facing);
     } catch (e) {
       setStatus('error', '카메라/마이크 권한이 필요합니다');
       return;
@@ -557,6 +643,8 @@
 
   config = loadConfig();
   document.getElementById('qualitySelect').value = config.quality; // loadConfig가 이미 화이트리스트 검증함
+  document.getElementById('facingSelect').value = config.facing;
+  renderFacingUi();
   if (PATH_PIN_RE.test(config.path) && PATH_PIN_RE.test(config.pin)) {
     document.getElementById('pathInput').value = config.path;
     document.getElementById('pinInput').value = config.pin;
