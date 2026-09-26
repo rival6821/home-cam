@@ -550,8 +550,9 @@ tx.setCodecPreferences(h264);</pre>
         <ul>
           <li><span class="mono">&lt;video playsinline muted autoplay&gt;</span> 3종 속성 동시 지정 — 하나라도 빠지면 자동재생이 차단된다.</li>
           <li>오디오 언뮤트는 반드시 <strong>사용자 제스처 안에서</strong>: 탭 이벤트 핸들러 내부에서 <span class="mono">videoEl.muted = false</span> 실행 → 이후 <span class="mono">audioCtx.resume()</span> 순서로 호출.</li>
-          <li>전체화면: iOS는 표준 <span class="mono">Fullscreen API</span>를 <span class="mono">&lt;video&gt;</span>에서 지원하지 않으므로
-          <span class="mono">videoEl.webkitEnterFullscreen?.() ?? videoEl.requestFullscreen()</span> 형태로 분기.</li>
+          <li>전체화면: 확대/축소·재생 컨트롤이 전체화면에서도 그대로 동작하도록 <span class="mono">&lt;video&gt;</span>가 아니라 플레이어 영역을
+          <span class="mono">wrapEl.requestFullscreen()</span>으로 올린다. iPhone은 표준 <span class="mono">Fullscreen API</span>를 일반 요소에서 지원하지 않으므로
+          <span class="mono">videoEl.webkitEnterFullscreen()</span>(iOS 네이티브 플레이어)으로 폴백.</li>
         </ul>
 
         <h3><span class="h-num">2.3</span>로컬 녹화용 MediaRecorder 코덱 매트릭스</h3>
