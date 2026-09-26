@@ -50,6 +50,8 @@ webrtcICEServers2:
 # 카메라 계정은 "cam-<경로>" 이름으로 자기 경로에만 게시(publish) 가능하고,
 # 뷰어 계정은 "family-viewer" 하나로 모든 경로를 읽기(read)만 가능하다.
 # 프런트엔드(camera.html/index.html)는 이 명명 규칙을 그대로 가정하고 동작한다.
+# 배터리 상태 릴레이(server/status)도 같은 계정으로 인증한다 — 요청의 PIN을
+# 이 서버의 OPTIONS /<경로>/whip|whep 으로 확인받으므로 PIN은 여기 한 곳에만 둔다.
 #
 # ⚠ 카메라를 추가할 때(§6 Phase 4, 예: 안방):
 #   1) 아래 목록에 cam-bedroom 계정을 똑같은 형태로 하나 더 추가

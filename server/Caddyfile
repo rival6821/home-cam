@@ -54,6 +54,14 @@ YOUR-HOST.tailXXXXX.ts.net:HOMECAM_PORT_PLACEHOLDER {
 		}
 	}
 
+	# 송출 폰 배터리 상태(GET/POST /<경로>/status) — status 컨테이너로 프록시.
+	# 인증은 status가 요청의 Authorization 헤더를 MediaMTX에 그대로 확인받는
+	# 방식이라 여기서 따로 할 일은 없다(server/status/server.js 참고).
+	@status path_regexp ^/[A-Za-z0-9_-]+/status$
+	handle @status {
+		reverse_proxy status:8890
+	}
+
 	# 그 외 요청은 정적 파일(뷰어=index.html, 카메라=camera.html) 서빙.
 	handle {
 		root * /var/www/homecam

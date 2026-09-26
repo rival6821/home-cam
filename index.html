@@ -84,6 +84,11 @@
   .dot.warn{ background:var(--warn); }
   .dot.error{ background:var(--danger); }
   .cam-name{ font-weight:600; font-size:14px; }
+  /* 송출 폰 배터리 — 부족하면 경고색, 보고가 끊기면 흐리게 */
+  .battery-pill{ font-size:12.5px; font-family:var(--font-mono); color:var(--ink-soft); white-space:nowrap; }
+  .battery-pill.low{ color:var(--warn); }
+  .battery-pill.critical{ color:var(--danger); }
+  .battery-pill.stale{ color:var(--muted); }
   .top-bar .spacer{ flex:1; }
   .icon-btn{
     background:rgba(255,255,255,.08); border:none; color:var(--ink); width:38px; height:38px; border-radius:50%;
@@ -177,6 +182,7 @@
         <button class="back-link" id="backBtn" style="position:static;">← 변경</button>
         <span class="cam-name" id="camNameLabel">–</span>
         <div class="status-pill"><span class="dot" id="statusDot"></span><span id="statusText">연결 중…</span></div>
+        <span class="battery-pill" id="batteryPill" hidden></span>
         <div class="spacer"></div>
         <span class="rec-badge" id="recBadge" hidden><span class="rec-dot"></span><span id="recTimer">00:00</span></span>
       </div>
@@ -206,6 +212,9 @@
   const PATH_PIN_RE = /^[A-Za-z0-9_-]{1,32}$/;
   const RECENT_KEY = 'homecam.viewer.recent';
   const RECENT_MAX = 5;
+  const BATTERY_POLL_INTERVAL = 30000;     // 카메라는 1분마다 보고하므로 30초면 충분
+  const BATTERY_STALE_AFTER = 180;         // 초 — 하트비트 3번을 놓치면 "보고 끊김"으로 표시
+  const BATTERY_LOW = 0.2, BATTERY_CRITICAL = 0.1;
 
   class AuthError extends Error {}
 
@@ -383,6 +392,76 @@
     }, WATCHDOG_INTERVAL);
   }
 
+  // ───────────────────────── 송출 폰 배터리 상태(GET /path/status) ─────────────────────────
+  // 카메라가 1분마다 올리는 배터리 값을 별도 상태 서비스(server/status)에서 읽는다.
+  // 영상 연결(WHEP)과는 독립적으로 돈다 — 영상이 끊겨 재연결 중일 때도 "마지막으로
+  // 보고된 배터리가 몇 %였는지"가 원인 파악(배터리 방전인지 네트워크인지)에 가장 쓸모 있다.
+  const batteryPill = document.getElementById('batteryPill');
+  let batteryTimer = null, batteryPollPath = null, lastBattery = null, lastBatterySeverity = 0;
+
+  function formatAge(sec){
+    if (sec < 60) return `${sec}초 전`;
+    if (sec < 3600) return `${Math.floor(sec / 60)}분 전`;
+    return `${Math.floor(sec / 3600)}시간 전`;
+  }
+  function batterySeverity(s){
+    if (s.charging) return 0;
+    if (s.level <= BATTERY_CRITICAL) return 2;
+    if (s.level <= BATTERY_LOW) return 1;
+    return 0;
+  }
+  function renderBattery(s){
+    const pct = Math.round(s.level * 100);
+    const stale = s.age > BATTERY_STALE_AFTER;
+    const severity = batterySeverity(s);
+    batteryPill.textContent = `🔋 ${pct}%${s.charging ? ' ⚡' : ''}${stale ? ` · ${formatAge(s.age)}` : ''}`;
+    batteryPill.title = `카메라 폰 배터리 · 마지막 보고 ${formatAge(s.age)}`;
+    batteryPill.className = 'battery-pill' + (stale ? ' stale' : severity === 2 ? ' critical' : severity === 1 ? ' low' : '');
+    batteryPill.hidden = false;
+
+    // 상황이 나빠지는 순간에만 한 번씩 알린다 — 재생 컨트롤이 숨어 있어도 보이도록 토스트로.
+    if (!stale) {
+      if (lastBattery && lastBattery.charging && !s.charging) flash(`카메라 폰 충전기가 분리되었습니다 (배터리 ${pct}%)`);
+      else if (severity > lastBatterySeverity) flash(`카메라 폰 배터리 부족 (${pct}%) — 충전이 필요합니다`);
+      lastBatterySeverity = severity;
+      lastBattery = s;
+    }
+  }
+  async function pollBattery(){
+    clearTimeout(batteryTimer);
+    const path = batteryPollPath;
+    if (!path) return;
+    batteryTimer = setTimeout(pollBattery, BATTERY_POLL_INTERVAL);
+    if (document.visibilityState === 'hidden') return; // 백그라운드에선 쉬고, 돌아오면 즉시 갱신(아래 리스너)
+    try {
+      const res = await fetch(`/${encodeURIComponent(path)}/status`, {
+        headers: { 'Authorization': 'Basic ' + btoa(`family-viewer:${config.pin}`) },
+        cache: 'no-store',
+      });
+      if (path !== batteryPollPath) return; // 그 사이 다른 카메라로 바꿨다
+      if (res.status === 401 || res.status === 403) { stopBatteryPolling(); return; } // PIN 오류 — 두드리지 않는다
+      if (res.status === 404) { batteryPill.hidden = true; return; } // 아직 보고 없음(배터리 API 미지원 기기 포함)
+      if (!res.ok) return; // 일시 오류 — 마지막 표시를 유지
+      const s = await res.json();
+      if (typeof s.level === 'number' && typeof s.charging === 'boolean' && typeof s.age === 'number') renderBattery(s);
+    } catch (e) { /* 네트워크 오류 — 마지막 표시를 유지하고 다음 주기에 다시 */ }
+  }
+  function startBatteryPolling(path){
+    stopBatteryPolling();
+    batteryPollPath = path;
+    pollBattery();
+  }
+  function stopBatteryPolling(){
+    clearTimeout(batteryTimer);
+    batteryPollPath = null;
+    lastBattery = null;
+    lastBatterySeverity = 0;
+    batteryPill.hidden = true;
+  }
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible' && batteryPollPath) pollBattery();
+  });
+
   // ───────────────────────── 메인 시청 흐름 ─────────────────────────
   async function startWatching(){
     setStatus('connecting', '연결 중…');
@@ -415,6 +494,7 @@
     unmuteOverlay.hidden = false;
     pushRecent(path, pin);
     startWatching();
+    startBatteryPolling(path);
   }
 
   // ───────────────────────── §2.2 iOS 언뮤트(사용자 제스처 안에서 동기 실행) ─────────────────────────
@@ -552,6 +632,7 @@
   });
   document.getElementById('backBtn').addEventListener('click', () => {
     cleanupConnection();
+    stopBatteryPolling();
     if (recorder && recorder.state === 'recording') stopRecording();
     history.replaceState(null, '', location.pathname);
     document.getElementById('pathInput').value = config.path;

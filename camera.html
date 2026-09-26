@@ -268,6 +268,8 @@
   const WAKE_RECHECK_INTERVAL = 30000;     // §3.3 Wake Lock 주기 점검
   const BURNIN_SHIFT_INTERVAL = 5 * 60000; // §3.2 5분 주기 픽셀 시프트
   const PATH_PIN_RE = /^[A-Za-z0-9_-]{1,32}$/; // §4.2 ASCII 화이트리스트
+  const BATTERY_REPORT_INTERVAL = 60000;   // 변화가 없어도 1분마다 보고(뷰어의 "마지막 보고" 판단 기준)
+  const BATTERY_REPORT_MIN_GAP = 15000;    // 잔량 변화는 최소 15초 간격으로 묶어서 보고
 
   class AuthError extends Error {}
 
@@ -533,17 +535,60 @@
     try {
       if (!navigator.getBattery) return;
       const battery = await navigator.getBattery();
+      batteryRef = battery;
       const update = () => {
         const pct = Math.round(battery.level * 100);
         const label = `${pct}%${battery.charging ? ' ⚡' : ''}`;
         batteryTop.textContent = label;
         peekBattery.textContent = label;
         document.getElementById('panelBattery').textContent = `${label} (navigator.getBattery — 비표준 API, 참고용)`;
+        scheduleBatteryReport(battery.charging !== lastReportedCharging); // 충전기 분리/연결은 바로 알린다
       };
       battery.addEventListener('levelchange', update);
       battery.addEventListener('chargingchange', update);
       update();
     } catch (e) { /* Safari 등 미지원 — 무시 */ }
+  }
+
+  // ───────────────────────── 배터리 상태를 서버로 보고(뷰어 표시용) ─────────────────────────
+  // MediaMTX는 영상·음성만 중계하므로 배터리 값은 별도 상태 서비스(server/status)에
+  // POST /<경로>/status로 올린다. 인증은 WHIP과 같은 게시 계정(cam-<경로>)을 쓴다.
+  // 1% 단위 levelchange마다 보내지 않도록 최소 간격을 두고, 변화가 없어도 주기적으로
+  // 보내 뷰어가 "마지막 보고 시각"으로 폰이 살아있는지까지 판단할 수 있게 한다.
+  let batteryRef = null, batteryReportTimer = null, lastBatteryReportAt = 0, lastReportedCharging = null;
+  let batteryReportDisabled = false;
+  function scheduleBatteryReport(urgent){
+    if (!batteryRef || batteryReportDisabled) return;
+    clearTimeout(batteryReportTimer);
+    const since = Date.now() - lastBatteryReportAt;
+    const wait = urgent ? 0 : Math.max(0, BATTERY_REPORT_MIN_GAP - since);
+    batteryReportTimer = setTimeout(sendBatteryReport, wait);
+  }
+  async function sendBatteryReport(){
+    clearTimeout(batteryReportTimer);
+    // 보고 성공 여부와 무관하게 다음 하트비트를 먼저 걸어둔다 — 서버가 잠깐 죽어도 끊기지 않게.
+    batteryReportTimer = setTimeout(sendBatteryReport, BATTERY_REPORT_INTERVAL);
+    if (!batteryRef || batteryReportDisabled) return;
+    if (!PATH_PIN_RE.test(config.path) || !PATH_PIN_RE.test(config.pin)) return;
+    lastBatteryReportAt = Date.now();
+    const charging = batteryRef.charging;
+    try {
+      const res = await fetch(`/${encodeURIComponent(config.path)}/status`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': 'Basic ' + btoa(`cam-${config.path}:${config.pin}`)
+        },
+        body: JSON.stringify({ level: batteryRef.level, charging }),
+      });
+      if (res.status === 401 || res.status === 403) {
+        // §4.1 레이트리밋 방지 — 잘못된 PIN으로는 계속 두드리지 않는다(설정을 바꾸면 페이지가 새로 뜬다)
+        batteryReportDisabled = true;
+        clearTimeout(batteryReportTimer);
+        return;
+      }
+      if (res.ok) lastReportedCharging = charging;
+    } catch (e) { /* 네트워크 오류 — 다음 하트비트에서 다시 보낸다 */ }
   }
 
   // ───────────────────────── §3.2 번인 완화(5분 주기 위치 이동) ─────────────────────────
@@ -669,6 +714,8 @@
     saveConfig(path, pin, quality, facing);
     config = { path, pin, quality, facing };
     pathLabel.textContent = path;
+    batteryReportDisabled = false;
+    scheduleBatteryReport(true); // 다음 하트비트(최대 1분)를 기다리지 않고 바로 뷰어에 보이게
     startPublishing();
   });
 

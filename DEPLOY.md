@@ -16,6 +16,7 @@ VPS의 저장소 클론을 Caddy가 직접 바인드 마운트하므로 이후 �
 1. [백엔드 최초 배포](#1-백엔드-최초-배포-한-번만)
 2. [PIN 설정](#2-pin-설정-필수--기본값은-자리-표시자다)
 3. [프런트엔드 배포·갱신](#3-프런트엔드-배포갱신)
+   - [백엔드 설정이 바뀐 경우](#백엔드-설정이-바뀐-경우-caddyfile--docker-composeyml--status)
 4. [접속 확인](#4-접속-확인)
 5. [운영 중 점검 명령](#5-운영-중-점검-명령)
 6. [방화벽 확인](#6-방화벽-확인)
@@ -111,6 +112,34 @@ cd ~/home-cam && git pull
 길게 들고 있을 수 있으니 설정 화면을 리셋하거나 캐시 무효화 쿼리스트링으로
 확인) 후 접속 화면(§4)으로 확인한다.
 
+### 백엔드 설정이 바뀐 경우 (`Caddyfile` · `docker-compose.yml` · `status/`)
+
+`git pull`로 받은 변경에 `server/` 쪽 파일이 들어 있으면 위 한 줄로는 부족하다
+— `Caddyfile`은 `setup.sh`가 호스트명·포트를 치환해 `/etc/homecam/`에 따로
+만들어 둔 사본을 쓰고, 새 컨테이너는 `docker compose up -d`를 해야 뜬다.
+`setup.sh`를 다시 돌릴 필요는 없고 아래만 하면 된다(`/etc/homecam/mediamtx.yml`의
+PIN은 건드리지 않는다):
+
+```bash
+cd ~/home-cam && git pull
+HOST=$(cat /etc/homecam/hostname)
+PORT=$(grep '^HOMECAM_PORT=' server/.env | cut -d= -f2)
+sed -e "s/YOUR-HOST.tailXXXXX.ts.net/$HOST/g" -e "s/HOMECAM_PORT_PLACEHOLDER/$PORT/g" \
+  server/Caddyfile | sudo tee /etc/homecam/Caddyfile >/dev/null
+
+cd server
+docker compose up -d                 # 새로 추가된 컨테이너(예: status)를 기동
+docker exec homecam-caddy caddy reload --config /etc/caddy/Caddyfile
+docker compose restart status        # status/server.js만 바뀐 경우(바인드 마운트라 재시작 필요)
+```
+
+**송출 폰 배터리 표시**(`status` 컨테이너)가 이 경우에 해당한다 — 이 기능이
+들어간 버전으로 처음 올릴 때 위 절차를 한 번 거쳐야 뷰어에 배터리가 나온다.
+PIN을 따로 설정할 필요는 없다: `status`는 요청에 담긴 카메라/시청 PIN을
+MediaMTX에 그대로 확인받으므로 `mediamtx.yml`의 계정이 유일한 원본이다.
+배터리 값은 안드로이드 Chrome 카메라에서만 읽을 수 있고(Battery Status API),
+아이폰 등 미지원 기기가 카메라면 뷰어에 배터리 표시가 아예 나타나지 않는다.
+
 ## 4. 접속 확인
 
 | 기기 | URL |
@@ -138,6 +167,11 @@ docker compose ps
 # 로그
 docker compose logs -f mediamtx
 docker compose logs -f caddy
+docker compose logs -f status
+
+# 송출 폰 배터리 보고 확인(카메라가 1분마다 올린 마지막 값, age=경과 초)
+docker exec homecam-caddy wget -qO- --header "Authorization: Basic $(printf 'family-viewer:<시청PIN>' | base64)" \
+  http://status:8890/livingroom/status
 
 # Tailscale·인증서 타이머 상태(이 둘은 호스트 네이티브라 systemd 그대로)
 sudo systemctl status tailscaled cert-renew.timer
@@ -187,12 +221,13 @@ List도 다시 한번 확인한다 — `ufw`는 VM 안쪽만 보고, VCN은 그 
 | `camera.html` | Caddy 컨테이너에 바인드 마운트(저장소 경로 그대로) | 카메라 송출 |
 | `server/mediamtx.yml` | `/etc/homecam/mediamtx.yml` → mediamtx 컨테이너에 마운트 | WHIP/WHEP·인증·저장 정책 |
 | `server/Caddyfile` | `/etc/homecam/Caddyfile` → caddy 컨테이너에 마운트 | TLS 종단·리버스 프록시·보안 헤더 |
-| `server/docker-compose.yml` | `~/home-cam/server/`에서 그대로 실행 | Caddy·MediaMTX 컨테이너 오케스트레이션 |
+| `server/docker-compose.yml` | `~/home-cam/server/`에서 그대로 실행 | Caddy·MediaMTX·status 컨테이너 오케스트레이션 |
+| `server/status/server.js` | status 컨테이너에 바인드 마운트(저장소 경로 그대로) | 송출 폰 배터리 상태 릴레이(메모리 보관, 인증은 MediaMTX에 위임) |
 | `server/cert-renew.{sh,service,timer}` | `/usr/local/sbin/`, `/etc/systemd/system/` | 인증서 매월 자동 갱신(호스트 네이티브) |
 
 `setup.sh`가 위 배치를 전부 자동으로 수행한다 — 표는 "무엇이 왜 거기 있는지"
 나중에 찾아볼 때를 위한 참조용이다. Tailscale·SSH·ufw만 호스트에 직접 설치되고,
-Caddy·MediaMTX는 컨테이너다(이유는 `server/docker-compose.yml` 상단 주석 참고).
+Caddy·MediaMTX·status는 컨테이너다(이유는 `server/docker-compose.yml` 상단 주석 참고).
 
 문제가 생기면 먼저 마스터플랜 §7 장애 조치 매트릭스를 확인한다 — 이 문서에
 없는 증상/원인/조치 목록이 정리돼 있다.
