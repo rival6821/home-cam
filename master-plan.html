@@ -877,6 +877,7 @@ docker compose up -d   <span class="c1"># mediamtx·caddy 컨테이너 기동 (s
               <tr><td>새벽 시간대 반복 끊김</td><td>공유기 야간 회선 재할당</td><td>공유기 DHCP 임대시간 연장, 재접속 로그로 패턴 확인</td></tr>
               <tr><td>발열로 인한 자동 종료</td><td>충전 상한 미설정 또는 밀폐 거치</td><td>§3.1 수칙 재점검, 거치 위치 통풍 개선</td></tr>
               <tr><td>VPS 응답 없음</td><td>트래픽 한도 초과 또는 컨테이너 다운</td><td><span class="mono">docker compose ps</span> / <span class="mono">docker compose logs</span>, Oracle 콘솔 사용량 확인</td></tr>
+              <tr><td><span class="mono">git pull</span> 후에도 프런트엔드가 이전 버전</td><td>Docker 파일 단위 바인드 마운트는 inode를 고정 참조하는데 <span class="mono">git</span>이 파일을 갱신할 때 삭제 후 재생성해 inode가 바뀜(호스트·컨테이너 inode 불일치)</td><td><span class="mono">docker compose restart caddy</span>로 마운트 재획득. 참고: DEPLOY.md §3</td></tr>
             </tbody>
           </table>
         </div>
