@@ -217,6 +217,12 @@
     <div class="player-wrap" id="playerWrap">
       <video id="playerVideo" playsinline muted autoplay></video>
 
+      <!-- 화면 전체를 덮는 막이라 컨트롤 바들보다 먼저 둔다 — 뒤에 두면 "← 변경"까지 덮어
+           소리를 켜기 전에는 카메라를 바꿀 수 없다. -->
+      <div class="unmute-overlay" id="unmuteOverlay">
+        <button class="unmute-btn" id="unmuteBtn">🔇 탭하여 소리 켜기</button>
+      </div>
+
       <div class="top-bar" id="topBar">
         <button class="back-link" id="backBtn" style="position:static;">← 변경</button>
         <span class="cam-name" id="camNameLabel">–</span>
@@ -224,10 +230,6 @@
         <span class="battery-pill" id="batteryPill" hidden></span>
         <div class="spacer"></div>
         <span class="rec-badge" id="recBadge" hidden><span class="rec-dot"></span><span id="recTimer">00:00</span></span>
-      </div>
-
-      <div class="unmute-overlay" id="unmuteOverlay">
-        <button class="unmute-btn" id="unmuteBtn">🔇 탭하여 소리 켜기</button>
       </div>
 
       <div class="zoom-badge" id="zoomBadge" hidden></div>
