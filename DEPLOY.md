@@ -151,9 +151,13 @@ sed -e "s/YOUR-HOST.tailXXXXX.ts.net/$HOST/g" -e "s/HOMECAM_PORT_PLACEHOLDER/$PO
 
 cd server
 docker compose up -d                 # 새로 추가된 컨테이너(예: status)를 기동
-docker exec homecam-caddy caddy reload --config /etc/caddy/Caddyfile
-docker compose restart status        # status/server.js만 바뀐 경우(바인드 마운트라 재시작 필요)
+docker compose restart caddy status  # Caddyfile·프런트엔드·server.js를 다시 마운트해 읽힘
 ```
+
+`caddy reload`가 아니라 재시작인 이유: reload는 컨테이너 **안에서** 설정만 다시
+읽을 뿐 바인드 마운트를 다시 잡지 않는다. 그래서 같은 `git pull`로 바뀐
+`index.html`·`camera.html`·`status/server.js`가 위의 inode 문제에 걸려 있으면
+reload로는 풀리지 않는다 — 재시작해야 마운트가 새 inode로 다시 붙는다.
 
 **송출 폰 배터리 표시**(`status` 컨테이너)가 이 경우에 해당한다 — 이 기능이
 들어간 버전으로 처음 올릴 때 위 절차를 한 번 거쳐야 뷰어에 배터리가 나온다.

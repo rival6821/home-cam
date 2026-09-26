@@ -26,8 +26,10 @@
 #
 # 배포(setup.sh가 자동 실행하지만 수동으로도):
 #   cd server && docker compose up -d
-# 프런트엔드(index.html/camera.html) 갱신은 저장소에서 git pull만 하면
-# 끝난다 — 아래 볼륨이 파일을 직접 바인드 마운트하므로 재시작도 필요 없다.
+# 프런트엔드(index.html/camera.html) 갱신은 저장소에서 git pull 하면 되지만,
+# 아래 볼륨은 "파일 단위" 바인드 마운트라 경로가 아니라 inode를 붙잡는다 —
+# git이 파일을 지우고 새로 만들면 컨테이너는 옛 파일을 계속 서빙한다.
+# 그때는 docker compose restart caddy (진단법은 DEPLOY.md §3).
 ###############################################################################
 
 services:
