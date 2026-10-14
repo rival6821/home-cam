@@ -29,6 +29,9 @@
 
   .screen{ position:fixed; inset:0; display:flex; }
   .center{ margin:auto; width:100%; max-width:420px; padding:28px; }
+  /* 내용이 화면보다 길면(가로 모드·작은 폰·키보드가 올라온 상태) 잘리지 않고 스크롤되게 한다.
+     viewport-fit=cover라 노치·홈 인디케이터 영역만큼 안쪽으로 들인다. */
+  #setupScreen{ overflow-y:auto; padding:env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left); }
 
   /* ── 설정 화면 ── */
   .brand{ font-size:13px; letter-spacing:.08em; text-transform:uppercase; color:var(--muted); margin-bottom:6px; }
@@ -74,16 +77,17 @@
   #playerVideo{ margin:auto; width:100%; height:100%; object-fit:contain; background:#000; }
 
   .top-bar{
-    position:absolute; top:0; left:0; right:0; padding:calc(14px + env(safe-area-inset-top)) 16px 28px;
-    display:flex; align-items:center; gap:10px; background:linear-gradient(to bottom, rgba(0,0,0,.7), transparent);
+    position:absolute; top:0; left:0; right:0;
+    padding:calc(14px + env(safe-area-inset-top)) calc(16px + env(safe-area-inset-right)) 28px calc(16px + env(safe-area-inset-left));
+    display:flex; flex-wrap:wrap; align-items:center; gap:6px 10px; background:linear-gradient(to bottom, rgba(0,0,0,.7), transparent);
     transition:opacity .2s ease;
   }
-  .status-pill{ display:flex; align-items:center; gap:6px; font-size:12.5px; font-family:var(--font-mono); color:var(--ink-soft); }
+  .status-pill{ display:flex; align-items:center; gap:6px; font-size:12.5px; font-family:var(--font-mono); color:var(--ink-soft); white-space:nowrap; }
   .dot{ width:7px; height:7px; border-radius:50%; background:var(--muted); }
   .dot.live{ background:var(--live); box-shadow:0 0 8px var(--live); }
   .dot.warn{ background:var(--warn); }
   .dot.error{ background:var(--danger); }
-  .cam-name{ font-weight:600; font-size:14px; }
+  .cam-name{ font-weight:600; font-size:14px; max-width:40vw; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
   /* 송출 폰 배터리 — 부족하면 경고색, 보고가 끊기면 흐리게 */
   .battery-pill{ font-size:12.5px; font-family:var(--font-mono); color:var(--ink-soft); white-space:nowrap; }
   .battery-pill.low{ color:var(--warn); }
@@ -95,14 +99,15 @@
     display:flex; align-items:center; justify-content:center; font-size:16px; padding:0;
   }
   .rec-badge{
-    display:flex; align-items:center; gap:6px; background:rgba(226,105,92,.15); color:var(--danger);
+    display:flex; white-space:nowrap; align-items:center; gap:6px; background:rgba(226,105,92,.15); color:var(--danger);
     font-family:var(--font-mono); font-size:12px; padding:5px 10px; border-radius:20px;
   }
   .rec-dot{ width:7px; height:7px; border-radius:50%; background:var(--danger); animation:pulse 1.4s ease-in-out infinite; }
   @keyframes pulse{ 0%,100%{opacity:1;} 50%{opacity:.3;} }
 
   .bottom-bar{
-    position:absolute; bottom:0; left:0; right:0; padding:20px 16px calc(20px + env(safe-area-inset-bottom));
+    position:absolute; bottom:0; left:0; right:0;
+    padding:20px calc(16px + env(safe-area-inset-right)) calc(20px + env(safe-area-inset-bottom)) calc(16px + env(safe-area-inset-left));
     display:flex; align-items:center; justify-content:center; gap:22px;
     background:linear-gradient(to top, rgba(0,0,0,.7), transparent);
     transition:opacity .2s ease;
@@ -131,7 +136,7 @@
   }
   .toast.show{ opacity:1; }
 
-  .back-link{ position:absolute; top:calc(14px + env(safe-area-inset-top)); left:16px; font-size:13px; color:var(--ink-soft); background:none; border:none; }
+  .back-link{ font-size:13px; color:var(--ink-soft); background:none; border:none; padding:6px 0; white-space:nowrap; }
 </style>
 </head>
 <body>
@@ -179,7 +184,7 @@
       <video id="playerVideo" playsinline muted autoplay></video>
 
       <div class="top-bar" id="topBar">
-        <button class="back-link" id="backBtn" style="position:static;">← 변경</button>
+        <button class="back-link" id="backBtn">← 변경</button>
         <span class="cam-name" id="camNameLabel">–</span>
         <div class="status-pill"><span class="dot" id="statusDot"></span><span id="statusText">연결 중…</span></div>
         <span class="battery-pill" id="batteryPill" hidden></span>
@@ -209,6 +214,7 @@
   const ICE_GATHER_TIMEOUT = 4000;
   const RECONNECT_BASE = 1000, RECONNECT_FACTOR = 1.8, RECONNECT_MAX = 30000, RECONNECT_JITTER = 0.2;
   const WATCHDOG_INTERVAL = 60000, WATCHDOG_MAX_STALLS = 3;
+  const DISCONNECT_GRACE = 5000;           // 'disconnected'는 대개 몇 초 안에 저절로 회복된다 — 그동안은 기다린다
   const PATH_PIN_RE = /^[A-Za-z0-9_-]{1,32}$/;
   const RECENT_KEY = 'homecam.viewer.recent';
   const RECENT_MAX = 5;
@@ -300,7 +306,7 @@
   // ───────────────────────── 상태 ─────────────────────────
   let config = { path: '', pin: '' };
   let pc = null, remoteStream = null, sessionUrl = null;
-  let reconnectAttempt = 0, reconnecting = false;
+  let reconnectAttempt = 0, reconnecting = false, reconnectTimer = null, disconnectTimer = null;
   let watchdogTimer = null;
   let recorder = null, recordedChunks = [], recTimerHandle = null, recStartedAt = 0;
 
@@ -342,6 +348,11 @@
 
   function cleanupConnection(){
     clearInterval(watchdogTimer);
+    clearTimeout(reconnectTimer);
+    clearTimeout(disconnectTimer);
+    reconnecting = false;
+    // 연결이 끊기면 녹화도 더 이어질 수 없다 — 받은 데까지 저장하고 UI를 되돌린다.
+    if (recorder && recorder.state === 'recording') stopRecording();
     if (sessionUrl) { fetch(sessionUrl, { method: 'DELETE' }).catch(() => {}); sessionUrl = null; }
     if (pc) { try { pc.close(); } catch (e) {} pc = null; }
   }
@@ -349,20 +360,25 @@
   // ───────────────────────── §3.3 지수 백오프 재연결(카메라와 동일 알고리즘) ─────────────────────────
   function scheduleReconnect(){
     if (reconnecting) return;
-    reconnecting = true;
     cleanupConnection();
+    reconnecting = true;
     const n = reconnectAttempt++;
     const base = Math.min(RECONNECT_MAX, RECONNECT_BASE * Math.pow(RECONNECT_FACTOR, n));
     const jitter = base * RECONNECT_JITTER * (Math.random() * 2 - 1);
     const wait = Math.max(250, Math.round(base + jitter));
     setStatus('warn', `재연결 대기 · ${Math.round(wait / 1000)}초 후`);
-    setTimeout(() => { reconnecting = false; startWatching(); }, wait);
+    reconnectTimer = setTimeout(() => { reconnecting = false; startWatching(); }, wait);
   }
 
   function onConnectionStateChange(){
     const state = pc.connectionState;
+    clearTimeout(disconnectTimer);
     if (state === 'connected') { reconnectAttempt = 0; setStatus('live', 'LIVE'); }
-    else if (state === 'failed' || state === 'disconnected' || state === 'closed') scheduleReconnect();
+    else if (state === 'disconnected') {
+      setStatus('warn', '연결 불안정…');
+      disconnectTimer = setTimeout(scheduleReconnect, DISCONNECT_GRACE);
+    }
+    else if (state === 'failed' || state === 'closed') scheduleReconnect();
   }
 
   function handleConnectFailure(e){
@@ -465,24 +481,27 @@
   // ───────────────────────── 메인 시청 흐름 ─────────────────────────
   async function startWatching(){
     setStatus('connecting', '연결 중…');
-    pc = new RTCPeerConnection({ iceServers: ICE_SERVERS });
+    // 연결 도중 "← 변경"으로 떠나면 pc가 바뀐다 — 그 뒤 늦게 도착한 결과로 뒤에서 몰래 이어붙지 않도록 peer로 확인한다.
+    const peer = pc = new RTCPeerConnection({ iceServers: ICE_SERVERS });
     remoteStream = new MediaStream();
     playerVideo.srcObject = remoteStream;
-    pc.addTransceiver('video', { direction: 'recvonly' });
-    pc.addTransceiver('audio', { direction: 'recvonly' });
-    pc.ontrack = (e) => remoteStream.addTrack(e.track);
-    pc.addEventListener('connectionstatechange', onConnectionStateChange);
+    peer.addTransceiver('video', { direction: 'recvonly' });
+    peer.addTransceiver('audio', { direction: 'recvonly' });
+    peer.ontrack = (e) => remoteStream.addTrack(e.track);
+    peer.addEventListener('connectionstatechange', onConnectionStateChange);
 
     try {
-      const offer = await pc.createOffer();
-      await pc.setLocalDescription(offer);
-      await waitForIceGatheringComplete(pc, ICE_GATHER_TIMEOUT);
-      sessionUrl = await playWhep(pc, config.path, config.pin);
+      const offer = await peer.createOffer();
+      await peer.setLocalDescription(offer);
+      await waitForIceGatheringComplete(peer, ICE_GATHER_TIMEOUT);
+      const url = await playWhep(peer, config.path, config.pin);
+      if (pc !== peer) { if (url) fetch(url, { method: 'DELETE' }).catch(() => {}); return; }
+      sessionUrl = url;
       setStatus('live', 'LIVE');
       startWatchdog();
       playerVideo.play().catch(() => {}); // 자동재생 실패는 무음 상태이므로 대개 통과, 실패 시 언뮤트 탭에서 재시도
     } catch (e) {
-      handleConnectFailure(e);
+      if (pc === peer) handleConnectFailure(e);
     }
   }
 
@@ -526,14 +545,13 @@
     document.getElementById('recordBtn').classList.toggle('recording', active);
     document.getElementById('recordBtn').textContent = active ? '⏹' : '⏺';
     recBadge.hidden = !active;
+    clearInterval(recTimerHandle);
     if (active) {
       recStartedAt = Date.now();
       recTimerHandle = setInterval(() => {
         const s = Math.floor((Date.now() - recStartedAt) / 1000);
         recTimer.textContent = `${String(Math.floor(s / 60)).padStart(2, '0')}:${String(s % 60).padStart(2, '0')}`;
       }, 500);
-    } else {
-      clearInterval(recTimerHandle);
     }
   }
 
@@ -549,7 +567,7 @@
     recordedChunks = [];
     recorder.ondataavailable = (e) => { if (e.data && e.data.size > 0) recordedChunks.push(e.data); };
     recorder.onerror = () => { flash('녹화 중 오류가 발생했습니다'); stopRecording(); };
-    recorder.onstop = () => saveRecording(recorder.mimeType || mime);
+    recorder.onstop = () => { setRecordingUI(false); saveRecording(recorder.mimeType || mime); }; // 브라우저가 스스로 멈춘 경우도 UI를 되돌린다
     try { recorder.start(1000); }
     catch (e) { flash('녹화 시작 실패 — 이 브라우저에서는 미지원'); return; } // §2.3 isTypeSupported()가 true여도 start()가 실패하는 iOS 사례 대응
     setRecordingUI(true);
@@ -633,7 +651,6 @@
   document.getElementById('backBtn').addEventListener('click', () => {
     cleanupConnection();
     stopBatteryPolling();
-    if (recorder && recorder.state === 'recording') stopRecording();
     history.replaceState(null, '', location.pathname);
     document.getElementById('pathInput').value = config.path;
     setPinRevealed(false); // 설정 화면으로 되돌아올 때도 가린 상태로 시작한다

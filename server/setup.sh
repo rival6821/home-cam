@@ -115,6 +115,10 @@ install -m 0755 "$SCRIPT_DIR/cert-renew.sh" /usr/local/sbin/cert-renew.sh
   echo "인증서 발급에 실패했습니다. 위 admin 콘솔 설정을 다시 확인하세요." >&2
   exit 1
 }
+# `tailscale cert`로 내보낸 파일은 자동 갱신되지 않는다 — 매월 타이머로 재발급(90일 만료 방지).
+install -m 0644 "$SCRIPT_DIR/cert-renew.service" "$SCRIPT_DIR/cert-renew.timer" /etc/systemd/system/
+systemctl daemon-reload
+systemctl enable --now cert-renew.timer
 
 ###############################################################################
 # 3단계 — Docker 설치 (§5.1-3, MediaMTX·Caddy의 실행 기반)

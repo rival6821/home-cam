@@ -37,7 +37,8 @@ chmod 600 "$CERT_DIR/$HOST.key"
 # 건너뛴다 — 4단계에서 컨테이너가 최초 기동될 때 이 인증서를 그대로 읽는다.
 if docker ps --format '{{.Names}}' 2>/dev/null | grep -qx 'homecam-caddy'; then
   echo "[cert-renew] Caddy 컨테이너에 갱신된 인증서 반영 중..."
-  docker exec homecam-caddy caddy reload --config /etc/caddy/Caddyfile --adapter caddyfile
+  # --force 필수: 설정이 그대로면 reload는 아무것도 안 하고, 파일로 불러온 인증서도 다시 읽지 않는다.
+  docker exec homecam-caddy caddy reload --config /etc/caddy/Caddyfile --adapter caddyfile --force
 else
   echo "[cert-renew] homecam-caddy 컨테이너가 아직 없어 reload를 건너뜁니다(최초 실행)."
 fi

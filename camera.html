@@ -38,6 +38,9 @@
 
   .screen{ position:fixed; inset:0; display:flex; }
   .center{ margin:auto; width:100%; max-width:420px; padding:28px; }
+  /* 내용이 화면보다 길면(가로 모드·작은 폰·키보드가 올라온 상태) 잘리지 않고 스크롤되게 한다.
+     viewport-fit=cover라 노치·홈 인디케이터 영역만큼 안쪽으로 들인다. */
+  #setupScreen{ overflow-y:auto; padding:env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left); }
 
   /* ── 설정 화면 ── */
   .brand{ font-size:13px; letter-spacing:.08em; text-transform:uppercase; color:var(--muted); margin-bottom:6px; }
@@ -48,6 +51,7 @@
     width:100%; background:var(--surface); border:1px solid var(--line); color:var(--ink);
     font-family:var(--font-mono); font-size:16px; padding:12px 14px; border-radius:6px; outline:none;
   }
+  select{ font-family:var(--font); } /* 고정폭 글꼴이면 좁은 폰에서 옵션 설명이 잘린다 */
   input:focus, select:focus{ border-color:var(--live); }
   .hint{ font-size:12px; color:var(--muted); margin-top:6px; }
   .err{ font-size:12px; color:var(--danger); margin-top:6px; min-height:14px; }
@@ -78,7 +82,7 @@
 
   /* ── 프리뷰(설치) 화면 ── */
   #previewScreen{ flex-direction:column; background:#000; }
-  #previewScreen video{ flex:1; width:100%; height:100%; object-fit:cover; background:#000; }
+  #previewScreen video{ flex:1; width:100%; height:100%; object-fit:contain; background:#000; } /* cover면 가장자리가 잘려 송출 화각을 오판한다 */
   .preview-chrome{
     position:absolute; left:0; right:0; bottom:0; padding:18px 20px calc(18px + env(safe-area-inset-bottom));
     background:linear-gradient(to top, rgba(0,0,0,.75), transparent);
@@ -114,12 +118,13 @@
   #panel{ background:rgba(0,0,0,.78); align-items:flex-end; z-index:20; }
   .sheet{
     width:100%; background:var(--surface); border-radius:16px 16px 0 0; padding:22px 22px calc(22px + env(safe-area-inset-bottom));
-    display:flex; flex-direction:column; gap:14px; max-height:80vh; overflow-y:auto;
+    display:flex; flex-direction:column; gap:14px; max-height:85dvh; overflow-y:auto;
   }
   .sheet h2{ font-size:16px; margin:0 0 4px; }
   .kv{ display:flex; justify-content:space-between; font-size:13.5px; padding:9px 0; border-bottom:1px solid var(--line); }
-  .kv span:first-child{ color:var(--ink-soft); }
-  .kv span:last-child{ font-family:var(--font-mono); }
+  .kv{ gap:12px; }
+  .kv span:first-child{ color:var(--ink-soft); flex:0 0 auto; }
+  .kv span:last-child{ font-family:var(--font-mono); text-align:right; min-width:0; overflow-wrap:anywhere; }
 </style>
 </head>
 <body>
@@ -155,14 +160,14 @@
 
         <label for="facingSelect">카메라</label>
         <select id="facingSelect">
-          <option value="environment" selected>후면 카메라 — 기본값, 화각·화질이 넓고 좋음</option>
-          <option value="user">전면 카메라 — 화면을 끈 채 세워두기 좋음</option>
+          <option value="environment" selected>후면 (기본) — 화각·화질 좋음</option>
+          <option value="user">전면 — 화면을 벽 쪽으로 세울 때</option>
         </select>
 
         <label for="qualitySelect">화질</label>
         <select id="qualitySelect">
-          <option value="low" selected>저전력 (480p·15fps) — 기본값, 발열·트래픽 최소</option>
-          <option value="medium">표준 (720p·24fps)</option>
+          <option value="low" selected>저전력 (기본) — 480p·15fps</option>
+          <option value="medium">표준 — 720p·24fps</option>
         </select>
 
         <div class="err" id="setupErr"></div>
@@ -265,6 +270,7 @@
   const ICE_GATHER_TIMEOUT = 4000;         // 완전 수집을 못해도 4초 후 진행(모바일망 지연 대비)
   const RECONNECT_BASE = 1000, RECONNECT_FACTOR = 1.8, RECONNECT_MAX = 30000, RECONNECT_JITTER = 0.2; // §3.3
   const WATCHDOG_INTERVAL = 60000, WATCHDOG_MAX_STALLS = 3; // §3.3 프레임 정지 워치독
+  const DISCONNECT_GRACE = 5000;           // 'disconnected'는 대개 몇 초 안에 저절로 회복된다 — 그동안은 기다린다
   const WAKE_RECHECK_INTERVAL = 30000;     // §3.3 Wake Lock 주기 점검
   const BURNIN_SHIFT_INTERVAL = 5 * 60000; // §3.2 5분 주기 픽셀 시프트
   const PATH_PIN_RE = /^[A-Za-z0-9_-]{1,32}$/; // §4.2 ASCII 화이트리스트
@@ -293,7 +299,7 @@
   // ───────────────────────── 상태 ─────────────────────────
   let config = { path:'', pin:'', quality:DEFAULT_QUALITY, facing:DEFAULT_FACING };
   let localStream = null, pc = null, sessionUrl = null;
-  let reconnectAttempt = 0, reconnecting = false, reconnectTimer = null;
+  let reconnectAttempt = 0, reconnecting = false, reconnectTimer = null, disconnectTimer = null;
   let watchdogTimer = null, lastFrameCount = 0, stallCount = 0;
   let wakeLock = null, burninTimer = null, peekHideTimer = null;
 
@@ -413,6 +419,9 @@
 
   function cleanupConnection(){
     clearInterval(watchdogTimer);
+    clearTimeout(reconnectTimer);
+    clearTimeout(disconnectTimer);
+    reconnecting = false;
     if (sessionUrl) { fetch(sessionUrl, { method: 'DELETE' }).catch(() => {}); sessionUrl = null; }
     if (pc) { try { pc.close(); } catch (e) {} pc = null; }
   }
@@ -420,8 +429,8 @@
   // ───────────────────────── §3.3 지수 백오프 재연결 ─────────────────────────
   function scheduleReconnect(){
     if (reconnecting) return;
-    reconnecting = true;
     cleanupConnection();
+    reconnecting = true;
     const n = reconnectAttempt++;
     const base = Math.min(RECONNECT_MAX, RECONNECT_BASE * Math.pow(RECONNECT_FACTOR, n));
     const jitter = base * RECONNECT_JITTER * (Math.random() * 2 - 1);
@@ -432,8 +441,13 @@
 
   function onConnectionStateChange(){
     const state = pc.connectionState;
+    clearTimeout(disconnectTimer);
     if (state === 'connected') { reconnectAttempt = 0; setStatus('live', '송출 중'); }
-    else if (state === 'failed' || state === 'disconnected' || state === 'closed') scheduleReconnect();
+    else if (state === 'disconnected') {
+      setStatus('warn', '연결 불안정 — 회복 대기 중');
+      disconnectTimer = setTimeout(scheduleReconnect, DISCONNECT_GRACE);
+    }
+    else if (state === 'failed' || state === 'closed') scheduleReconnect();
   }
 
   function handleConnectFailure(e){
@@ -463,45 +477,43 @@
     }, WATCHDOG_INTERVAL);
   }
   async function reacquireCameraTrack(){
+    try { await replaceVideoTrack(config.facing); }
+    catch (e) { console.warn('[homecam] 트랙 재획득 실패', e); }
+  }
+
+  // 재협상 없이 sender.replaceTrack으로 비디오만 바꾼다 — WHIP 세션과 마이크는 그대로 두므로
+  // 시청 측에서는 끊김 없이 화면만 바뀐다. 실패해도 기존 트랙이 살아 있어 송출은 계속된다.
+  // audio:false인 이유: 마이크를 다시 잡으면 iOS는 송출 중인 기존 오디오 트랙을 음소거한다.
+  async function replaceVideoTrack(facing){
+    const newStream = await getCameraStream(config.quality, facing, { audio:false });
+    const newVideoTrack = newStream.getVideoTracks()[0];
     try {
-      const newStream = await getCameraStream(config.quality, config.facing);
-      const newVideoTrack = newStream.getVideoTracks()[0];
       const sender = pc && pc.getSenders().find(s => s.track && s.track.kind === 'video');
       if (sender) await sender.replaceTrack(newVideoTrack);
-      previewVideo.srcObject = newStream;
-      if (localStream) localStream.getVideoTracks().forEach(t => t.stop());
+    } catch (e) { newVideoTrack.stop(); throw e; }
+    if (localStream) {
+      localStream.getVideoTracks().forEach(t => { localStream.removeTrack(t); t.stop(); });
+      localStream.addTrack(newVideoTrack);
+    } else {
       localStream = newStream;
-    } catch (e) { console.warn('[homecam] 트랙 재획득 실패', e); }
+    }
+    previewVideo.srcObject = localStream; // 트랙만 갈아끼우면 프리뷰가 멈춘 채 남는 브라우저가 있다
   }
 
   // ───────────────────────── 전면/후면 전환 ─────────────────────────
-  // 재협상 없이 sender.replaceTrack으로만 바꾼다 — WHIP 세션과 마이크는 그대로 두므로
-  // 시청 측에서는 끊김 없이 화면만 바뀐다. 실패해도 기존 트랙이 살아 있어 송출은 계속된다.
   async function switchCamera(){
     const next = otherFacing(config.facing);
     const btn = document.getElementById('switchCameraBtn');
     btn.disabled = true;
     btn.textContent = '카메라 전환 중…';
-    let newVideoTrack = null;
     try {
-      const newStream = await getCameraStream(config.quality, next, { audio:false });
-      newVideoTrack = newStream.getVideoTracks()[0];
-      const sender = pc && pc.getSenders().find(s => s.track && s.track.kind === 'video');
-      if (sender) await sender.replaceTrack(newVideoTrack);
-      if (localStream) {
-        localStream.getVideoTracks().forEach(t => { localStream.removeTrack(t); t.stop(); });
-        localStream.addTrack(newVideoTrack);
-      } else {
-        localStream = newStream;
-      }
-      previewVideo.srcObject = localStream; // 트랙만 갈아끼우면 프리뷰가 멈춘 채 남는 브라우저가 있다
+      await replaceVideoTrack(next);
       config.facing = next;
       saveConfig(config.path, config.pin, config.quality, config.facing);
       document.getElementById('facingSelect').value = config.facing;
       lastFrameCount = 0; stallCount = 0; // 새 트랙의 프레임 수로 워치독을 다시 센다
     } catch (e) {
       console.warn('[homecam] 카메라 전환 실패', e);
-      if (newVideoTrack) newVideoTrack.stop();
       alert(`${facingLabel(next)}로 전환하지 못했습니다. 이 기기에 해당 카메라가 없거나 다른 앱이 쓰고 있을 수 있습니다.`);
     } finally {
       renderFacingUi();
@@ -716,20 +728,26 @@
     pathLabel.textContent = path;
     batteryReportDisabled = false;
     scheduleBatteryReport(true); // 다음 하트비트(최대 1분)를 기다리지 않고 바로 뷰어에 보이게
+    showScreen('preview');
     startPublishing();
   });
 
   // ───────────────────────── 메인 송출 흐름 ─────────────────────────
+  // 재연결 때도 불리므로 화면은 바꾸지 않는다(감시 중 블랙아웃이 풀리면 안 된다 — 호출부가 처음에만 전환).
   async function startPublishing(){
-    showScreen('preview');
-    setStatus('connecting', '카메라 준비 중…');
-    try {
-      localStream = await getCameraStream(config.quality, config.facing);
-    } catch (e) {
-      setStatus('error', '카메라/마이크 권한이 필요합니다');
-      return;
+    // 살아 있는 스트림은 재연결에도 그대로 쓴다 — 매번 새로 잡으면 이전 카메라·마이크 트랙이 쌓인다.
+    if (!localStream || localStream.getTracks().some(t => t.readyState !== 'live')) {
+      if (localStream) localStream.getTracks().forEach(t => t.stop());
+      localStream = null;
+      setStatus('connecting', '카메라 준비 중…');
+      try {
+        localStream = await getCameraStream(config.quality, config.facing);
+      } catch (e) {
+        setStatus('error', '카메라/마이크 권한이 필요합니다');
+        return;
+      }
+      previewVideo.srcObject = localStream;
     }
-    previewVideo.srcObject = localStream;
 
     pc = new RTCPeerConnection({ iceServers: ICE_SERVERS });
     localStream.getTracks().forEach(track => pc.addTrack(track, localStream));
@@ -764,6 +782,7 @@
     document.getElementById('pathInput').value = config.path;
     document.getElementById('pinInput').value = config.pin;
     pathLabel.textContent = config.path;
+    showScreen('preview');
     startPublishing();
   } else {
     showScreen('setup');
